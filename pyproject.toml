@@ -7,6 +7,7 @@ requires-python = ">=3.12"
 dependencies = [
   "anyio>=4.8,<4.10",
   "fastapi>=0.115,<0.116",
+  "httpx>=0.28,<1",
   "openai>=1.109,<3",
   "python-multipart>=0.0.20,<1",
   "uvicorn>=0.34,<1",
@@ -17,7 +18,6 @@ meet-eval = "meet_in_multi_language.cli:main"
 
 [dependency-groups]
 dev = [
-  "httpx>=0.28,<1",
   "pytest>=8.3,<9",
 ]
 

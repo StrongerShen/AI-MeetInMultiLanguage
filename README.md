@@ -4,9 +4,11 @@
 
 狀態：P1 品質原型開發中，尚未完成模型品質驗證。更新日期：2026-09-12。
 
+目前實測主機基線：Ubuntu、46.9 GiB RAM、NVIDIA GeForce RTX 3050 8 GiB。其他專案文件中的 16 GB 紀錄已過期，不可沿用為本專案的資源判斷依據。
+
 ## 目前進度：P1 品質原型
 
-已建立第一個可執行骨架：FastAPI Web 頁面可上傳短音檔並呼叫候選轉錄模型，轉錄工作與標準化結果保存在本機 `var/`；命令列工具可將長錄音轉為 16 kHz 單聲道、切成有原檔時間偏移的片段，並計算 CER／WER。這是評測工具，尚未包含摘要、完整長音檔自動合併或正式使用者系統。
+已建立第一個可執行骨架：FastAPI Web 頁面可上傳短音檔並呼叫候選轉錄模型，轉錄工作與標準化結果保存在本機 `var/`；命令列工具可將長錄音轉為 16 kHz 單聲道、切成有原檔時間偏移的片段、自動合併，並計算 CER／WER。另有固定測試稿的 Ollama 摘要比較工具。這仍是評測工具，Web 尚未串接完整摘要與正式使用者系統。
 
 需求：Python 3.12、[uv](https://docs.astral.sh/uv/)、FFmpeg，以及可用的 `OPENAI_API_KEY`。金鑰只設定於伺服器環境，不放入瀏覽器或 Git。
 
@@ -26,6 +28,49 @@ uv run meet-eval score reference.txt hypothesis.txt --unit character
 ```
 
 整批轉錄每完成一段就寫入 `parts/`；中途失敗後重跑會沿用已完成片段，加入 `--force` 才全部重做。合併結果的時間會換算回原始會議時間軸。評測資料、錄音、金鑰及執行結果都在 `.gitignore` 排除範圍內。
+
+這台 `Ubuntu.local` 既有的 Speaches／Breeze-ASR-26 服務也已接入批次工具：
+
+```bash
+uv run meet-eval speaches-transcribe ./var/eval/meeting/manifest.json \
+  ./var/results \
+  --host http://127.0.0.1:8001/v1 \
+  --profile breeze \
+  --keyword 專案名稱
+```
+
+`breeze` profile 使用 `paulpengtw/faster-whisper-Breeze-ASR-26`、語言 `zh`、段落時間戳，並預設關閉 VAD；可用 `--vad` 做同一素材的 A/B 測試。這個 Breeze CTranslate2 版本透過目前 Speaches 端點要求逐字時間戳時，實測會產生與大段文字不相稱的極短時間範圍，因此暫不啟用，原型先保留約 30 秒段落時間。混語 prompt 也會使部分 Breeze 段落時間縮短，故 Breeze 預設不傳 prompt，專有名詞只使用 hotwords。`large-v3` profile 已保留，但只有伺服器安裝 `Systran/faster-whisper-large-v3` 後才能執行；混語模式不鎖單一語言。服務目前只綁定本機 `127.0.0.1:8001`，因此從其他電腦使用 `Ubuntu.local:8001` 會連線失敗。
+
+亦可用同一份逐字稿比較區域網路 Ollama 模型的摘要能力：
+
+```bash
+uv run meet-eval ollama-benchmark eval/fixtures/meeting.zh-Hant-TW.txt \
+  ./var/ollama-benchmark \
+  --host http://Ubuntu.local:11434 \
+  --model qwen3.5:9b \
+  --model qwen3.8:latest \
+  --model gemma4:12b \
+  --model muse-glimmer:latest
+```
+
+此評測固定使用相同提示、JSON schema、temperature 及 seed，檢查 JSON 結構、來源段落 ID 與臺灣慣用詞彙，並記錄模型耗時與 token 數。它評估的是逐字稿後處理與摘要，不代表模型具備音訊轉錄能力。
+
+### 2026-09-12 本機實測
+
+測試主機為 46.9 GiB RAM、RTX 3050 8 GiB；固定輸入為 `eval/fixtures/meeting.zh-Hant-TW.txt`。速度欄是「輸出 token ÷ 整次請求秒數」，包含模型載入，不是模型宣稱值。
+
+| 模型 | 結果 | 耗時 | 約略速度 | 內容觀察 |
+| --- | --- | ---: | ---: | --- |
+| `qwen3.5:9b` | 通過 JSON／schema／引用 ID／臺灣用詞檢查 | 36.6 秒 | 25.3 token/s | 速度最佳；正確保留七天僅為提案，但漏列摘要格式決議，未解析「下週五」日期 |
+| `qwen3.8:latest`（27.3B Q4_K_M） | 通過全部結構檢查 | 565.3 秒 | 1.6 token/s | 內容最完整；正確解析 2026-09-18，沒有把保存提案誤寫成決議，但單次延遲很高 |
+| `gemma4:12b` | 通過全部結構檢查 | 159.7 秒 | 5.5 token/s | 把「下週五」錯算為 2026-09-19，且漏列摘要格式決議 |
+| `muse-glimmer:latest`（27.9B Q4_K_M） | 失敗 | 逾時 600 秒 | — | 沒有取得可評分輸出，暫不納入候選 |
+
+P1 暫定以 `qwen3.5:9b` 作為互動開發／快速草稿預設，`qwen3.8:latest` 作為低頻率的品質對照，不選 `gemma4:12b` 或 `muse-glimmer:latest`。這只是合成逐字稿單次測試，尚未取代真實會議評測；後續要加入多次重跑、人工事實標註、長逐字稿分層摘要及整體處理時間。27B Q4 模型可放入目前 46.9 GiB 系統 RAM，但無法完整放入 8 GiB 顯存；本次延遲應解讀為目前 CPU／GPU 分攤配置的實測，不是系統 RAM 容量不足。
+
+同日以 `/home/stronger/音樂/260909_1631.mp3` 實測 Breeze：原檔長 82 分 36 秒，切成 9 段後成功合併為 168 段、19,514 字的 `raw_asr` 結果。已知開頭／結尾非語音區產生大量「謝謝」重覆幻覺；品質旗標會標出高重覆、高 no-speech probability 與高 compression ratio，但不刪除原始文字。含人聲 100 秒 A/B 中，開 VAD 只留下「真好聽」，關閉 VAD 則保留完整財務報告內容，因此目前 Breeze 預設關閉 VAD；相反地，前 60 秒非語音片段在開 VAD 後能正確輸出空白。結論是現有 VAD 門檻不能全域套用，需另做分段 gate 或調校。
+
+RTX 3050 上必須讓大型 Ollama 模型與 Breeze ASR 互斥使用顯存。實測 `qwen3.5:9b` 占用約 6.3 GiB 時，Speaches 重新載入 Breeze 會發生 CUDA OOM；正式 worker 應使用單一 GPU 工作佇列，切換階段時先確認前一模型已釋放，再載入下一模型。系統不可自行停止無法確認擁有者的既有推論工作。
 
 ## 1. 需求與暫定範圍
 
@@ -147,12 +192,26 @@ flowchart TD
 | --- | --- | --- |
 | 雲端轉錄 | 可用 `gpt-transcribe` 作為混語轉錄候選 | 臺語品質、實際帳號可用性、時間對齊方式 |
 | 雲端含講者 | 可用 `gpt-4o-transcribe-diarize` 作為整合方案候選 | 混語準確度、跨切段講者一致性、提示限制 |
+| 本機混語 | `faster-whisper`／CTranslate2 載入 `large-v3` | 尚未在本機安裝；需實測四語切換、顯存與速度 |
+| 本機臺語 | Speaches 載入 `paulpengtw/faster-whisper-Breeze-ASR-26` | 已串接；需以人工臺語對照稿驗證用字與語意 |
 
-全本機部署保留為後續選項，不列入本次 MVP 的必要比較；若雲端臺語品質不足，再評估臺語專用模型作補強。
+P1 採雙路候選：國語／英語／日語為主且穿插臺語時比較 `large-v3`；長篇臺語或國臺混用則比較 Breeze-ASR-26。路由先由使用者選擇，累積有語言標註的對照資料後才評估自動判斷，避免為了選模型而先錯辨語言。
+
+`large-v3` profile 使用下列語言混合錨點；Breeze 因上述時間戳實測結果暫不套用：
+
+```text
+這是一場包含臺灣華語、English、日本語，以及臺灣話口語（如：按呢、代誌、歹勢）的商務會議。請忠實保留各語言與專有名詞。
+```
+
+原生 `faster-whisper` 後續實驗基線採 `beam_size=5`、`condition_on_previous_text=False`，並 A/B 比較 `vad_filter`。目前 Ubuntu 使用的 Speaches API 可設定 prompt、hotwords、VAD 及時間戳，但其 OpenAPI 沒有暴露 beam 與 previous-text 參數；在服務真正支援前，不宣稱這兩項已套用。參考專案曾在一段 10.7 秒素材量到 VAD 裁掉開頭約 2 秒，因此 Breeze profile 先以 VAD 關閉為保守預設，另用純靜音與正常語音樣本做 gate。
+
+LLM 的臺語同音字校正只能產生「校正版」，不得覆蓋 ASR 原始稿。校正時依會議脈絡處理如「安捏／按呢」、「代至／代誌」等候選，保留英語、日語與專有名詞；每段都連回原始 ASR 版本及音訊。Breeze-ASR-26 官方模型卡也明載其輸出是中文漢字轉錄，而非原生臺語正字法，因此「臺語漢字原稿」仍需人工對照集與校訂流程，不能只靠模型名稱推定已達標。
 
 官方文件說明 `gpt-transcribe` 支援多語與關鍵詞提示；這是列入候選的依據，不是本專案的臺語準確度保證。[模型文件](https://developers.openai.com/api/docs/models/gpt-transcribe)
 
 目前 OpenAI 文件指出：上傳檔案上限為 25 MB；diarize 的 `diarized_json` 提供講者及段落起迄時間，超過 30 秒需設定切段策略，且不支援 prompt；`timestamp_granularities[]` 僅適用 `whisper-1`。應用需依實際模型適配切段與對齊。不能把模型支援的 `zh-tw` 當作已證實支援臺語的依據。[轉錄指南](https://developers.openai.com/api/docs/guides/speech-to-text)
+
+`faster-whisper` 是以 CTranslate2 執行 Whisper 的實作，官方介面包含 initial prompt、beam search、previous-text 條件、Silero VAD 與逐字時間戳。[faster-whisper 官方專案](https://github.com/SYSTRAN/faster-whisper) Breeze-ASR-26 是 Whisper large-v2 的臺語／國臺混用微調模型；官方資料說明訓練語料為合成語音，真實自發語音、口音與專有名詞可能退化，公開測試的平均 CER 為 30.13%，故本專案只把它列為候選而非預設品質保證。[Breeze-ASR-26 官方模型卡](https://huggingface.co/MediaTek-Research/Breeze-ASR-26)
 
 以上於 2026-09-12 查核；實作串接前重新確認 API 契約。摘要模型於同一套真實逐字稿上比較事實正確性、引用及成本，暫不鎖定供應商。尚未進行付費呼叫或上傳會議內容。
 

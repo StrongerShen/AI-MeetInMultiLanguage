@@ -1,0 +1,14 @@
+會議日期：2026-09-12（Asia/Taipei）
+
+[seg-001][00:00:04][主持人] 大家好，今仔日欲討論第一版多語會議工具。先講清楚，第一版是上傳錄音後處理，無欲做即時字幕。
+[seg-002][00:00:22][Alice] From engineering, I propose that we keep the original audio for seven days, but this is only a proposal until legal confirms the retention policy.
+[seg-003][00:00:41][健太] 評価用の音声は、各言語を五分ずつ準備する案があります。ただし、台湾語は十分ではないと思います。
+[seg-004][00:00:58][主持人] 臺語干焦五分鐘確實無夠。咱決定臺語佮混語攏愛至少十五分鐘，會使重疊計算。
+[seg-005][00:01:16][Alice] 好，我負責整理二十分鐘人工校訂錄音，九月十五日下午五點以前放到測試資料夾。
+[seg-006][00:01:32][Bob] I can build the upload API. I should have a draft by next Friday, but the owner of production deployment is still undecided.
+[seg-007][00:01:49][主持人] Bob 負責上傳 API 草稿，期限照你講的下週五。正式部署由誰負責，今天先不決定。
+[seg-008][00:02:06][健太] 要約には、決定事項、担当者、期限、それから元の発言へのリンクが必要です。
+[seg-009][00:02:19][主持人] 好，摘要就包含決議、負責人、期限及原文連結。所有介面佮摘要攏愛用臺灣慣用的繁體中文。
+[seg-010][00:02:38][Alice] One correction: the seven-day retention was my suggestion, not a decision. We still need legal to decide the retention period.
+[seg-011][00:02:55][主持人] 無錯，保存期限列做待確認，毋通寫做七工已經定案。今日先按呢。
+

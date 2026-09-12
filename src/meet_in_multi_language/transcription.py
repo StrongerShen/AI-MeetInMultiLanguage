@@ -8,7 +8,7 @@ from .models import Engine, TranscriptResult, TranscriptSegment
 
 class Transcriber(Protocol):
     def transcribe(
-        self, audio_path: Path, engine: Engine, keywords: list[str]
+        self, audio_path: Path, engine: Engine | str, keywords: list[str]
     ) -> TranscriptResult: ...
 
 

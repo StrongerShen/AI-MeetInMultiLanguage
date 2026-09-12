@@ -36,7 +36,7 @@ def _shift_segment(
 def transcribe_manifest(
     manifest_path: Path,
     output_dir: Path,
-    engine: Engine,
+    engine: Engine | str,
     transcriber: Transcriber,
     keywords: list[str] | None = None,
     force: bool = False,
@@ -46,7 +46,8 @@ def transcribe_manifest(
     if not isinstance(chunks, list) or not chunks:
         raise ValueError("manifest 沒有可轉錄的音訊片段")
 
-    run_dir = output_dir / engine.value
+    engine_name = engine.value if isinstance(engine, Engine) else engine
+    run_dir = output_dir / engine_name
     part_dir = run_dir / "parts"
     part_dir.mkdir(parents=True, exist_ok=True)
     combined_segments: list[TranscriptSegment] = []
@@ -88,7 +89,8 @@ def transcribe_manifest(
         completed_chunks.append(chunk_id)
 
     transcript = TranscriptResult(
-        model=engine.value,
+        provider=(result.provider if completed_chunks else "unknown"),
+        model=(result.model if completed_chunks else engine_name),
         text="\n".join(part for part in transcript_parts if part),
         detected_languages=detected_languages,
         segments=combined_segments,
@@ -105,4 +107,3 @@ def transcribe_manifest(
         json.dumps(output, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
     return output
-
