@@ -384,6 +384,61 @@ window.submitRenameSpeaker = async function(runId) {
   }
 };
 
+window.deleteRun = async function(runId, filename) {
+  if (!confirm(`確定要刪除「${filename || runId}」這筆工作與錄音檔案嗎？此操作無法復原。`)) {
+    return;
+  }
+  try {
+    const response = await fetch(`/api/runs/${runId}`, { method: "DELETE" });
+    if (!response.ok) {
+      alert(`刪除失敗：${await readError(response)}`);
+    } else {
+      delete selectedRevisionPerRun[runId];
+      openCorrectionPanels.delete(runId);
+      openRenamePanels.delete(runId);
+      delete correctionDrafts[runId];
+      delete renameSpeakerDefaults[runId];
+      await loadRuns();
+      await loadHealth();
+    }
+  } catch (err) {
+    alert(`網路連線失敗：${err.message}`);
+  }
+};
+
+const filterStatePerRun = {};
+
+window.onFilterInput = function(runId) {
+  const card = document.getElementById(`run-card-${runId}`);
+  if (!card) return;
+  const keyword = (document.getElementById(`search-input-${runId}`)?.value || "").toLowerCase().trim();
+  const speaker = document.getElementById(`speaker-filter-${runId}`)?.value || "";
+  const onlyFlagged = document.getElementById(`flag-filter-${runId}`)?.checked || false;
+
+  filterStatePerRun[runId] = { keyword, speaker, onlyFlagged };
+
+  const rows = card.querySelectorAll(".segment-row");
+  rows.forEach(row => {
+    const textNode = row.querySelector(".segment-text");
+    const spkNode = row.querySelector(".speaker-tag");
+    const flagsNode = row.querySelectorAll(".quality-flag");
+    const text = (textNode?.textContent || "").toLowerCase();
+    const spk = spkNode?.textContent?.replace(/[\[\]]/g, "") || "";
+    const hasFlags = flagsNode.length > 0;
+
+    let match = true;
+    if (keyword && !text.includes(keyword)) match = false;
+    if (speaker && spk !== speaker) match = false;
+    if (onlyFlagged && !hasFlags) match = false;
+
+    if (match) {
+      row.classList.remove("hidden-by-filter");
+    } else {
+      row.classList.add("hidden-by-filter");
+    }
+  });
+};
+
 window.switchRevision = function(runId, revisionId) {
   selectedRevisionPerRun[runId] = revisionId;
   delete correctionDrafts[runId];
@@ -398,7 +453,11 @@ async function loadRuns() {
     document.activeElement &&
     (document.activeElement.tagName === "TEXTAREA" || document.activeElement.tagName === "INPUT") &&
     document.activeElement.id &&
-    (document.activeElement.id.startsWith("correction-text-") || document.activeElement.id.startsWith("rename-"))
+    (
+      document.activeElement.id.startsWith("correction-text-") ||
+      document.activeElement.id.startsWith("rename-") ||
+      document.activeElement.id.startsWith("search-input-")
+    )
   ) {
     activeInputId = document.activeElement.id;
     selStart = document.activeElement.selectionStart;
@@ -445,6 +504,11 @@ async function loadRuns() {
     const isRenameOpen = openRenamePanels.has(run.run_id);
     const draftText = correctionDrafts[run.run_id] !== undefined ? correctionDrafts[run.run_id] : currentRev?.text || "";
 
+    const uniqueSpeakers = Array.from(
+      new Set((currentRev?.segments || []).map(s => s.speaker).filter(Boolean))
+    );
+    const filterState = filterStatePerRun[run.run_id] || { keyword: "", speaker: "", onlyFlagged: false };
+
     return `
       <article class="run-card" id="run-card-${escapeHtml(run.run_id)}">
         <div class="card-header">
@@ -455,9 +519,12 @@ async function loadRuns() {
               建立於：${new Date(run.created_at).toLocaleString("zh-TW", { hour12: false })}
             </p>
           </div>
-          <span class="status-pill ${escapeHtml(run.status)}">
-            ${escapeHtml(statusLabels[run.status] || run.status)}
-          </span>
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <span class="status-pill ${escapeHtml(run.status)}">
+              ${escapeHtml(statusLabels[run.status] || run.status)}
+            </span>
+            <button type="button" class="small danger-outline" title="刪除這筆工作紀錄與音訊" onclick="deleteRun('${escapeHtml(run.run_id)}', '${escapeHtml(run.original_filename)}')">刪除</button>
+          </div>
         </div>
 
         ${run.stored_filename ? `
@@ -521,6 +588,20 @@ async function loadRuns() {
             </div>
           </div>
 
+          <div class="filter-toolbar">
+            <div class="filter-group">
+              <input type="search" class="filter-input" id="search-input-${escapeHtml(run.run_id)}" placeholder="搜尋段落文字..." value="${escapeHtml(filterState.keyword || '')}" oninput="onFilterInput('${escapeHtml(run.run_id)}')" />
+              <select class="filter-select" id="speaker-filter-${escapeHtml(run.run_id)}" onchange="onFilterInput('${escapeHtml(run.run_id)}')">
+                <option value="">全部講者</option>
+                ${uniqueSpeakers.map(spk => `<option value="${escapeHtml(spk)}" ${spk === filterState.speaker ? "selected" : ""}>${escapeHtml(spk)}</option>`).join("")}
+              </select>
+            </div>
+            <label class="checkbox-label" style="font-size: 0.85rem;">
+              <input type="checkbox" id="flag-filter-${escapeHtml(run.run_id)}" ${filterState.onlyFlagged ? "checked" : ""} onchange="onFilterInput('${escapeHtml(run.run_id)}')" />
+              僅顯示警示段落
+            </label>
+          </div>
+
           <div class="transcript-box">
             ${renderSegments(currentRev.segments, run.run_id)}
           </div>
@@ -530,6 +611,12 @@ async function loadRuns() {
       </article>
     `;
   }).join("");
+
+  runs.forEach(run => {
+    if (filterStatePerRun[run.run_id]) {
+      onFilterInput(run.run_id);
+    }
+  });
 
   for (const [rId, state] of Object.entries(playingStates)) {
     const player = document.getElementById(`audio-player-${rId}`);

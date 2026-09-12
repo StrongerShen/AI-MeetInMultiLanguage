@@ -489,3 +489,35 @@ def test_rename_speaker_endpoint(tmp_path: Path) -> None:
     assert data["raw_asr"]["segments"][0]["speaker"] == "SPEAKER_00"  # raw_asr 絕對不變
     assert data["revisions"][1]["segments"][0]["speaker"] == "王董事長"
     assert data["result"]["segments"][0]["speaker"] == "王董事長"
+
+
+def test_delete_run_endpoint(tmp_path: Path) -> None:
+    from meet_in_multi_language import api
+    from meet_in_multi_language.models import EvaluationRun, RunStatus
+
+    app = api.create_app(Settings(tmp_path, 1024 * 1024, "test-key"))
+    store = api.RunStore(tmp_path)
+    audio_file = store.audio_path("to-delete.wav")
+    audio_file.write_bytes(wav_bytes())
+
+    store.save(
+        EvaluationRun(
+            run_id="run-api-delete",
+            original_filename="sample.wav",
+            stored_filename="to-delete.wav",
+            engine=Engine.BREEZE,
+            status=RunStatus.COMPLETED,
+        )
+    )
+
+    async def exercise_api() -> tuple[httpx.Response, httpx.Response]:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            resp_del = await client.delete("/api/runs/run-api-delete")
+            resp_missing = await client.delete("/api/runs/non-existent-run")
+            return resp_del, resp_missing
+
+    resp_del, resp_missing = asyncio.run(exercise_api())
+    assert resp_del.status_code == 204
+    assert not audio_file.exists()
+    assert resp_missing.status_code == 404

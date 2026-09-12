@@ -58,7 +58,40 @@ def build_parser() -> argparse.ArgumentParser:
     vad.add_argument("--vad", dest="vad_filter", action="store_true")
     vad.add_argument("--no-vad", dest="vad_filter", action="store_false")
     local_asr.set_defaults(vad_filter=None)
+
+    pipe = commands.add_parser(
+        "pipeline", help="執行端到端批次處理：切段、轉錄、結構化摘要與多格式匯出"
+    )
+    pipe.add_argument("audio", type=Path, help="音訊檔案路徑")
+    pipe.add_argument("output", type=Path, help="輸出目錄路徑")
+    pipe.add_argument(
+        "--engine",
+        choices=("breeze", "gpt-transcribe", "gpt-4o-transcribe-diarize"),
+        default="breeze",
+        help="轉錄引擎",
+    )
+    pipe.add_argument(
+        "--summary-model",
+        default=None,
+        help="Ollama 結構化摘要模型名稱（例如 qwen3.5:9b）",
+    )
+    pipe.add_argument(
+        "--segment-seconds",
+        type=int,
+        default=600,
+        help="長音訊切段秒數上限（預設 600 秒）",
+    )
+    pipe.add_argument("--keyword", action="append", default=[], help="關鍵詞提示（可多次指定）")
+    pipe.add_argument("--speaches-url", default="http://127.0.0.1:8001/v1")
+    pipe.add_argument("--ollama-url", default="http://127.0.0.1:11434")
+    pipe.add_argument(
+        "--export",
+        default="txt,srt,vtt,md,json",
+        help="匯出格式（以逗號分隔，預設 txt,srt,vtt,md,json）",
+    )
+    pipe.add_argument("--force", action="store_true", help="強制重新轉錄已有快取的切段")
     return parser
+
 
 
 def main() -> None:
@@ -141,6 +174,25 @@ def main() -> None:
                 ensure_ascii=False,
             )
         )
+        return
+
+    if args.command == "pipeline":
+        from .pipeline import run_pipeline
+
+        export_formats = [fmt.strip() for fmt in args.export.split(",") if fmt.strip()]
+        report = run_pipeline(
+            source_audio=args.audio,
+            output_dir=args.output,
+            engine=args.engine,
+            summary_model=args.summary_model,
+            segment_seconds=args.segment_seconds,
+            keywords=args.keyword,
+            export_formats=export_formats,
+            speaches_url=args.speaches_url,
+            ollama_url=args.ollama_url,
+            force=args.force,
+        )
+        print(json.dumps(report, ensure_ascii=False, indent=2))
         return
 
     reference = args.reference.read_text(encoding="utf-8")

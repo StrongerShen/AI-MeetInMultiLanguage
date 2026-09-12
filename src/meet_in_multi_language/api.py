@@ -340,6 +340,14 @@ def create_app(
         except ValueError as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
 
+    @app.delete("/api/runs/{run_id}", status_code=204)
+    async def delete_run(run_id: str) -> Response:
+        try:
+            store.delete(run_id, delete_audio=True)
+            return Response(status_code=204)
+        except RunNotFoundError as error:
+            raise HTTPException(status_code=404, detail="找不到這筆轉錄工作") from error
+
     return app
 
 

@@ -134,3 +134,14 @@ class RunStore:
                 for path in self.run_dir.glob("*.json")
             ]
         return sorted(runs, key=lambda item: item.created_at, reverse=True)
+
+    def delete(self, run_id: str, delete_audio: bool = True) -> None:
+        """刪除工作紀錄，並可選擇性安全刪除關聯的音訊檔案。"""
+        _validate_run_id(run_id)
+        with self._lock:
+            run = self.get(run_id)
+            run_file = self.run_dir / f"{run_id}.json"
+            run_file.unlink(missing_ok=True)
+            if delete_audio and run.stored_filename:
+                audio_file = self.audio_path(run.stored_filename)
+                audio_file.unlink(missing_ok=True)

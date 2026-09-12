@@ -123,6 +123,19 @@ button.small { padding: 6px 12px; font-size: 0.85rem; font-weight: 600; }
 .rename-modal { margin-top: 10px; padding: 12px; background: #f7faf8; border: 1px solid #cfe0d4; border-radius: 8px; display: grid; gap: 8px; }
 .rename-grid { display: grid; grid-template-columns: 1fr 1fr auto; gap: 8px; align-items: end; }
 
+/* 刪除按鈕 */
+button.danger { background: #d93829; color: #fff; border: 0; }
+button.danger:hover:not(:disabled) { background: #b32517; }
+button.danger-outline { background: #fff; color: #c92a2a; border: 1px solid #f1aeb5; }
+button.danger-outline:hover:not(:disabled) { background: #fff5f5; border-color: #d93829; }
+
+/* 逐字稿篩選列 */
+.filter-toolbar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; padding: 6px 10px; background: #f3f7f4; border-radius: 6px; border: 1px solid #dce8df; font-size: 0.85rem; }
+.filter-group { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.filter-input { width: 180px; padding: 4px 8px; font-size: 0.85rem; border: 1px solid #b7c7bc; border-radius: 6px; }
+.filter-select { padding: 4px 8px; font-size: 0.85rem; border: 1px solid #b7c7bc; border-radius: 6px; }
+.segment-row.hidden-by-filter { display: none !important; }
+
 @media (max-width: 640px) {
   main { margin: 16px auto; }
   .panel { padding: 16px; }
@@ -130,4 +143,6 @@ button.small { padding: 6px 12px; font-size: 0.85rem; font-weight: 600; }
   .revision-toolbar { flex-direction: column; align-items: flex-start; }
   .audio-player-wrapper { flex-direction: column; align-items: stretch; }
   .rename-grid { grid-template-columns: 1fr; }
+  .filter-toolbar { flex-direction: column; align-items: flex-start; }
+  .filter-input { width: 100%; }
 }
