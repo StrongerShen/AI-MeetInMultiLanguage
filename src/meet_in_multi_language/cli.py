@@ -90,7 +90,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="匯出格式（以逗號分隔，預設 txt,srt,vtt,md,json）",
     )
     pipe.add_argument("--force", action="store_true", help="強制重新轉錄已有快取的切段")
+
+    doc = commands.add_parser("doctor", help="檢查系統相依性、GPU 顯存與推論服務狀態")
+    doc.add_argument("--json", action="store_true", help="以結構化 JSON 輸出")
     return parser
+
 
 
 
@@ -195,7 +199,25 @@ def main() -> None:
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return
 
+    if args.command == "doctor":
+        from .config import Settings
+        from .doctor import diagnose_system, format_doctor_report
+
+        settings = Settings.from_env()
+        diag = diagnose_system(
+            data_dir=settings.data_dir,
+            speaches_url=settings.speaches_url,
+            ollama_url=settings.ollama_url,
+            ollama_model=settings.ollama_model,
+        )
+        if getattr(args, "json", False):
+            print(json.dumps(diag, ensure_ascii=False, indent=2))
+        else:
+            print(format_doctor_report(diag))
+        return
+
     reference = args.reference.read_text(encoding="utf-8")
+
     hypothesis = args.hypothesis.read_text(encoding="utf-8")
     if args.unit == "word":
         score = word_error_rate(reference, hypothesis)
