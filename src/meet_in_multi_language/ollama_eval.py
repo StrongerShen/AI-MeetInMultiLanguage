@@ -109,7 +109,11 @@ class OllamaClient:
         )
 
     def summarize(
-        self, model: str, transcript: str, keep_alive: int | str = 0
+        self,
+        model: str,
+        transcript: str,
+        keep_alive: int | str = 0,
+        num_ctx: int = 24576,
     ) -> dict[str, Any]:
         response = self._client.post(
             "/api/chat",
@@ -123,7 +127,7 @@ class OllamaClient:
                     {"role": "system", "content": SYSTEM_PROMPT},
                     {"role": "user", "content": transcript},
                 ],
-                "options": {"temperature": 0, "seed": 42, "num_ctx": 16384},
+                "options": {"temperature": 0, "seed": 42, "num_ctx": num_ctx},
             },
         )
         response.raise_for_status()
@@ -154,7 +158,11 @@ class AsyncOllamaClient:
         )
 
     async def summarize(
-        self, model: str, transcript: str, keep_alive: int | str = 0
+        self,
+        model: str,
+        transcript: str,
+        keep_alive: int | str = 0,
+        num_ctx: int = 24576,
     ) -> dict[str, Any]:
         response = await self._client.post(
             "/api/chat",
@@ -168,7 +176,7 @@ class AsyncOllamaClient:
                     {"role": "system", "content": SYSTEM_PROMPT},
                     {"role": "user", "content": transcript},
                 ],
-                "options": {"temperature": 0, "seed": 42, "num_ctx": 16384},
+                "options": {"temperature": 0, "seed": 42, "num_ctx": num_ctx},
             },
         )
         response.raise_for_status()

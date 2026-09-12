@@ -4,6 +4,8 @@ import json
 from datetime import UTC, datetime
 from pathlib import Path
 
+from typing import Callable
+
 from .models import Engine, TranscriptResult, TranscriptSegment
 from .transcription import Transcriber
 
@@ -40,6 +42,7 @@ def transcribe_manifest(
     transcriber: Transcriber,
     keywords: list[str] | None = None,
     force: bool = False,
+    progress_callback: Callable[[int, int, str, bool], None] | None = None,
 ) -> dict[str, object]:
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     chunks = manifest.get("chunks")
@@ -54,14 +57,18 @@ def transcribe_manifest(
     detected_languages: list[str] = []
     transcript_parts: list[str] = []
     completed_chunks: list[str] = []
+    total_chunks = len(chunks)
 
-    for chunk in chunks:
+    for index, chunk in enumerate(chunks, 1):
         if not isinstance(chunk, dict):
             raise ValueError("manifest 的片段格式不正確")
         chunk_id = str(chunk["chunk_id"])
         audio_path = manifest_path.parent / str(chunk["path"])
         part_path = part_dir / f"{chunk_id}.json"
-        if part_path.is_file() and not force:
+        is_cached = part_path.is_file() and not force
+        if progress_callback:
+            progress_callback(index, total_chunks, chunk_id, is_cached)
+        if is_cached:
             result = TranscriptResult.model_validate_json(
                 part_path.read_text(encoding="utf-8")
             )

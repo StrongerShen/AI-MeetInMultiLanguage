@@ -2,7 +2,7 @@
 
 將含中文（暫指華語）、英語、日語、臺語的會議錄音，轉成可校訂、可回聽的逐字稿，以及可追溯來源的會議摘要與分析。
 
-狀態：P1 品質原型完成；P2 處理核心、P3 檢閱介面與 P4 交付成果（環境自我診斷工具 meet-eval doctor、調校指南 docs/tuning.md、完整 .env.example）實作完成，67 項自動化測試全數通過。更新日期：2026-09-13。
+狀態：P1 品質原型完成；P2 處理核心、P3 檢閱介面與 P4 交付成果（系統診斷工具 meet-eval doctor、調校指南 docs/tuning.md、82 分鐘長會議實機端到端批次壓測）實作完成，68 項自動化測試全數通過。更新日期：2026-09-13。
 
 
 目前實測主機基線：Ubuntu、46.9 GiB RAM、NVIDIA GeForce RTX 3050 8 GiB。其他專案文件中的 16 GB 紀錄已過期，不可沿用為本專案的資源判斷依據。
@@ -351,7 +351,7 @@ LLM 的臺語同音字校正只能產生「校正版」，不得覆蓋 ASR 原�
 - [x] 介面、譯文、摘要、分析及說明一律使用臺灣繁體中文（`zh-TW`）與臺灣慣用詞彙。
 - [x] 提供真實混語樣本與對照資料，完成 P1 量測：Breeze ASR 在自發語音上 CER 為 5.82%（優於 ≤ 15% 門檻）；Ollama 9B 摘要與 RTX 3050 顯存切換閉環實測通過；確定 Breeze 預設不傳 hotwords 之最佳配置。
 - [x] P2/P3 核心功能實作：音訊回聽串流、播放段落同步高亮、多格式逐字稿／摘要匯出（TXT、SRT、VTT、Markdown、JSON）、批次講者更名（保留 raw_asr 不可變）、端到端批次處理 CLI（`meet-eval pipeline`）、段落即時搜尋篩選與工作刪除清理。
-- [x] P4 交付成果完備：系統環境自我診斷工具（`meet-eval doctor`）、環境設定檔範本（`.env.example`）、實機部署與資源調校指南（`docs/tuning.md`）。
+- [x] P4 交付成果完備：系統環境自我診斷工具（`meet-eval doctor`）、環境設定檔範本（`.env.example`）、實機部署與資源調校指南（`docs/tuning.md`）、82.6 分鐘真實長會議（118.9 MB）端到端批次壓測驗收通過（切段斷點續跑、Breeze 顯存自動釋放、Ollama 24k 長上下文結構化摘要與 5 種格式匯出）。
 - [ ] 一般／最長會議時間、講者數、每月錄音時數與錄音設備。
 - [ ] 個人使用或團隊使用，以及資料保存期限與成本預算。
 
@@ -396,10 +396,10 @@ LLM 的臺語同音字校正只能產生「校正版」，不得覆蓋 ASR 原�
 - 多格式匯出：實作 `GET /api/runs/{id}/export`，支援純文字（TXT）、字幕檔（SRT）、網頁字幕（VTT）、會議總結報告（Markdown）及結構化資料（JSON），支援指定逐字稿版本。
 - 工作清理與刪除：實作 `DELETE /api/runs/{id}` 與前端刪除確認按鈕，安全清理紀錄與磁碟音訊。
 - 逐字稿即時篩選：前端提供即時文字搜尋、講者過濾與品質警示篩選。
-- 端到端批次處理 CLI：實作 `meet-eval pipeline` 與 Python 模組 `run_pipeline`，一鍵完成長音訊切段、斷點續跑轉錄、Ollama 摘要與 5 種格式匯出。
+- 端到端批次處理 CLI：實作 `meet-eval pipeline` 與 Python 模組 `run_pipeline`，一鍵完成長音訊切段、斷點續跑轉錄、Ollama 摘要與 5 種格式匯出；支援 `num_ctx: 24576` 容納完整長逐字稿。
 - 系統相依性檢查工具：實作 `meet-eval doctor`，一鍵自動探測作業系統、RAM、RTX 3050 顯存狀態、ffmpeg 工具鏈、Speaches/Breeze 與 Ollama 模型就緒度。
 - 健康端點會實際探測 Speaches 與 Ollama；API 摘要端點加入 409 處理中防重；非同步 HTTP client 與轉錄器已加入關閉處理。
-- 指定測試指令目前為 **67 項全數通過**，Python `compileall`、JavaScript `node --check` 與 `git diff --check` 皆通過。
+- 指定測試指令目前為 **68 項全數通過**，Python `compileall`、JavaScript `node --check` 與 `git diff --check` 皆通過。
 
 接手後優先事項：
 

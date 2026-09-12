@@ -5,6 +5,9 @@ import os
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
+
+import httpx
 
 from .audio import prepare_audio_chunks, probe_audio, sha256_file
 from .batch import transcribe_manifest
@@ -112,6 +115,10 @@ def run_pipeline(
                 raise ValueError(f"使用 {engine} 需要提供 OPENAI_API_KEY")
             transcriber = OpenAITranscriber(api_key)
 
+    def _pipeline_progress(idx: int, total: int, c_id: str, cached: bool) -> None:
+        tag = "[快取]" if cached else "[處理]"
+        print(f"  {tag} 切段轉錄進度 ({idx}/{total})：{c_id}")
+
     transcribe_result = transcribe_manifest(
         manifest_path,
         output_dir,
@@ -119,6 +126,7 @@ def run_pipeline(
         transcriber,
         keywords=keywords or [],
         force=force,
+        progress_callback=_pipeline_progress,
     )
     transcript_data = transcribe_result["transcript"]
     assert isinstance(transcript_data, dict)
@@ -128,6 +136,16 @@ def run_pipeline(
     summary_result: SummaryResult | None = None
     summary_path: Path | None = None
     if summary_model:
+        # 若使用 Breeze ASR，轉錄完成後主動卸載以釋放顯存供 Ollama 摘要使用
+        if engine == "breeze":
+            try:
+                speaches_root = speaches_url.removesuffix("/v1")
+                encoded_model = quote(PROFILES["breeze"].model, safe="")
+                with httpx.Client(timeout=5.0) as http_client:
+                    http_client.delete(f"{speaches_root}/api/ps/{encoded_model}")
+            except Exception:
+                pass
+
         client = ollama_client or OllamaClient(ollama_url)
         formatted_transcript = format_transcript_for_summary(transcript_result)
         summary_raw = client.summarize(summary_model, formatted_transcript, keep_alive=0)
