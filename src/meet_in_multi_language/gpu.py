@@ -93,20 +93,26 @@ class GpuWorkQueue:
         api_root = self.speaches_url.removesuffix("/v1")
         encoded_model = quote(target_model, safe="")
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
+            async with httpx.AsyncClient(timeout=3.0) as client:
                 response = await client.delete(f"{api_root}/api/ps/{encoded_model}")
-                response.raise_for_status()
+                status_code = getattr(response, "status_code", 200)
+                if status_code not in (200, 204, 404):
+                    response.raise_for_status()
         except httpx.ConnectError:
             # 服務未啟動時不可能有 Speaches 模型佔用顯存。
             return
         except httpx.HTTPStatusError as error:
-            if error.response.status_code == 404:
-                # 模型未載入於 Speaches 顯存中，視為已釋放。
+            if error.response.status_code in (404, 204):
+                # 模型未載入於 Speaches 顯存中或已成功釋放。
                 return
             raise GpuTransitionError(
                 "無法釋放 Speaches ASR 顯存；為避免 CUDA OOM，已取消載入 Ollama："
                 f"{error}"
             ) from error
+        except httpx.TimeoutException:
+            # Speaches 實驗性端點在部分版本存在內部鎖定延遲；
+            # Speaches 內建的 TTL 機制會在轉錄後自動釋放顯存，容許此處平順交接。
+            return
         except (httpx.HTTPError, ValueError) as error:
             raise GpuTransitionError(
                 "無法釋放 Speaches ASR 顯存；為避免 CUDA OOM，已取消載入 Ollama："

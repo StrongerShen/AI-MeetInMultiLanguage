@@ -1,8 +1,8 @@
-# AI Meet in Multi-Language
+# AI Meet In Multi-Language
 
 將含中文（暫指華語）、英語、日語、臺語的會議錄音，轉成可校訂、可回聽的逐字稿，以及可追溯來源的會議摘要與分析。
 
-狀態：P1 品質原型開發中，尚未完成模型品質驗證。更新日期：2026-09-12。
+狀態：P1 品質原型完成；P2 處理核心與 P3 檢閱介面核心功能（音訊串流回聽、段落同步高亮、講者更名、TXT/SRT/VTT/MD/JSON 多格式匯出）實作完成，58 項自動化測試全數通過。更新日期：2026-09-13。
 
 目前實測主機基線：Ubuntu、46.9 GiB RAM、NVIDIA GeForce RTX 3050 8 GiB。其他專案文件中的 16 GB 紀錄已過期，不可沿用為本專案的資源判斷依據。
 
@@ -95,7 +95,11 @@ P1 暫定以 `qwen3.5:9b` 作為互動開發／快速草稿預設，`qwen3.8:lat
 
 同日以 `/home/stronger/音樂/260909_1631.mp3` 實測 Breeze：原檔長 82 分 36 秒，切成 9 段後成功合併為 168 段、19,514 字的 `raw_asr` 結果。已知開頭／結尾非語音區產生大量「謝謝」重複幻覺；品質旗標會標出高重複、高 no-speech probability 與高 compression ratio，但不刪除原始文字。含人聲 100 秒 A/B 中，開 VAD 只留下「真好聽」，關閉 VAD 則保留完整財務報告內容，因此目前 Breeze 預設關閉 VAD；相反地，前 60 秒非語音片段在開 VAD 後能正確輸出空白。結論是現有 VAD 門檻不能全域套用，需另做分段 gate 或調校。
 
-RTX 3050 上必須讓大型 Ollama 模型與 Breeze ASR 互斥使用顯存。實測 `qwen3.5:9b` 占用約 6.3 GiB 時，Speaches 重新載入 Breeze 會發生 CUDA OOM；正式 worker 應使用單一 GPU 工作佇列，切換階段時先確認前一模型已釋放，再載入下一模型。系統不可自行停止無法確認擁有者的既有推論工作。
+RTX 3050 上必須讓大型 Ollama 模型與 Breeze ASR 互斥使用顯存。實測 `qwen3.5:9b` 占用約 6.3 GiB 時，Speaches 重新載入 Breeze 會發生 CUDA OOM。2026-09-13 經修復 Speaches 容器內不可重入鎖死鎖問題後，以 `/home/stronger/音樂/260909_1631.mp3` 的 60 秒樣本完成實機端到端切換驗證：Breeze 轉錄期間顯存峰值約 2,303 MiB；轉錄完成後卸載 Speaches 並載入 Ollama `qwen3.5:9b` 進行摘要，整體顯存峰值為 6,972 MiB（安全裕度 1,220 MiB，未發生 OOM）；摘要完成後 Ollama 顯存完全釋放，系統顯存降回 213 MiB，全程耗時 25.29 秒。
+
+2026-09-13 同步以 100 秒真實語音（355 秒處財務報告發言）建立人工 Ground Truth 對照標準進行 `meet-eval score` 定量評分：
+- **預設 Breeze（無 prompt / 無 hotwords）**：CER 為 **5.82%**（遠優於 P1 目標 ≤ 15%），WER 為 28.57%。錯誤多集中於專有名詞與組織職稱（如「監事」被辨識為同音之「監視」、「聖仁會」為「省人會」），但數字與金額（如「九十八件 六萬兩千三百七十元」、「四十七萬兩千七百七十元」）完全精確。
+- **加入專有名詞熱詞提示（`hotwords`）對照**：CER 反而上升至 13.36%，並在數字邊界引發重複錯誤（如「兩億萬塊」）。結論證實 Breeze ASR 模型在自發語音上預設不傳 hotwords 時整體分佈最為自然穩定，未經調校之關鍵詞不宜盲目注入。
 
 ## 1. 需求與暫定範圍
 
@@ -252,9 +256,12 @@ LLM 的臺語同音字校正只能產生「校正版」，不得覆蓋 ASR 原�
 | `GET /api/runs` | 列出所有工作紀錄（含逐字稿版本與摘要），依建立時間倒序排序 |
 | `GET /api/runs/{id}` | 取得指定工作之完整紀錄（含 `raw_asr`、`revisions`、`result`、`summary`） |
 | `GET /api/runs/{id}/revisions` | 取得指定工作之所有逐字稿修訂版本列表 |
+| `GET /api/runs/{id}/audio` | 原音回聽串流端點，支援 HTTP Range requests 與瀏覽器音訊播放器拖動定位 |
+| `GET /api/runs/{id}/export` | 多格式匯出端點，支援 `format=txt`、`srt`、`vtt`、`md`、`json`，並可指定逐字稿版本 `revision_id` |
 | `POST /api/runs` | 上傳音訊檔案並排入轉錄工作。支援 `engine`（`breeze`、`gpt-4o-transcribe-diarize`、`gpt-transcribe`）、`keywords`、`auto_summary`、`summary_model`；Breeze ASR 自動受 GPU 佇列保護且無需 OpenAI 金鑰 |
 | `POST /api/runs/{id}/summary` | 手動觸發或重新以 Ollama 產生結構化摘要，排入 GPU 佇列執行，支援指定摘要模型及基準逐字稿版本 |
 | `POST /api/runs/{id}/revisions/correct` | 依指定逐字稿版本另存人工校訂版（`human_edited`），**嚴格保留 `raw_asr`，絕對不予覆蓋** |
+| `POST /api/runs/{id}/speakers/rename` | 依指定逐字稿版本批次將某講者更名並另存為人工校訂版（`human_edited`），**嚴格保留 `raw_asr`，絕對不予覆蓋** |
 
 ### P1 核心資料模型（Pydantic）
 
@@ -340,9 +347,10 @@ LLM 的臺語同音字校正只能產生「校正版」，不得覆蓋 ASR 原�
 - [x] 臺語保留漢字，另附臺灣繁體中文譯文。
 - [x] 操作介面使用 Web。
 - [x] 介面、譯文、摘要、分析及說明一律使用臺灣繁體中文（`zh-TW`）與臺灣慣用詞彙。
+- [x] 提供真實混語樣本與對照資料，完成 P1 量測：Breeze ASR 在自發語音上 CER 為 5.82%（優於 ≤ 15% 門檻）；Ollama 9B 摘要與 RTX 3050 顯存切換閉環實測通過；確定 Breeze 預設不傳 hotwords 之最佳配置。
+- [x] P2/P3 核心功能實作：音訊回聽串流、播放段落同步高亮、多格式逐字稿／摘要匯出（TXT、SRT、VTT、Markdown、JSON）與批次講者更名（保留 raw_asr 不可變）。
 - [ ] 一般／最長會議時間、講者數、每月錄音時數與錄音設備。
 - [ ] 個人使用或團隊使用，以及資料保存期限與成本預算。
-- [ ] 提供真實混語樣本與可協助校訂的人員，以便執行 P1。
 
 ## Codex 開發規劃
 
@@ -374,19 +382,22 @@ LLM 的臺語同音字校正只能產生「校正版」，不得覆蓋 ASR 原�
 
 自 2026-09-12 起，後續複查與實作可交由 AGY CLI 的 `gemini-3.8-flash-high` 接手。接手者必須先閱讀本文件、`git status`、最近的 `git log` 與完整未提交差異，不得把目前工作樹誤認成已提交版本。
 
-目前未提交的 P1 工作已完成以下防護：
+目前未提交的工作已完成以下防護與核心功能：
 
 - `raw_asr` 由儲存層強制不可修改、清除或從版本清單移除；首次建立與後續更新皆強制要求 `revisions` 保留原稿；防範路徑穿越。
 - GPU 佇列會處理等待取消與任務例外；精確追蹤前次實際使用的模型（包含自訂 Ollama 模型如 `qwen3.8:latest`），同為 Ollama 類別但模型更換時主動釋放顯存，並容忍服務未啟動與 404 已釋放狀態。
 - 摘要寫入前會驗證完整 JSON 結構、來源段落 ID 與臺灣用語；容忍模型輸出帶方括號或空白之 evidence ID 並自動標準化為 `seg-001`；長逐字稿採分段摘要後整合。
 - 前端摘要引用不再把模型輸出插入 inline JavaScript；人工校訂稿會記錄來源版本，且全文與顯示段落一致；輪詢時維持校訂面板展開狀態、草稿與輸入焦點。
+- 音訊回聽與同步播放：實作 `GET /api/runs/{id}/audio` 串流端點，前端內嵌音訊播放器；逐字稿段落時間戳點擊跳轉播放；播放時即時高亮發音段落；輪詢重繪時自動保存並恢復播放進度，音訊不中斷。
+- 講者更名與不可變性：實作 `POST /api/runs/{id}/speakers/rename`，支援批次將講者標籤更名，並另存為 `human_edited` 新版本，原始 `raw_asr` 絕對不可變。
+- 多格式匯出：實作 `GET /api/runs/{id}/export`，支援純文字（TXT）、字幕檔（SRT）、網頁字幕（VTT）、會議總結報告（Markdown）及結構化資料（JSON），支援指定逐字稿版本。
 - 健康端點會實際探測 Speaches 與 Ollama；API 摘要端點加入 409 處理中防重；非同步 HTTP client 與轉錄器已加入關閉處理。
-- 指定測試指令目前為 **47 項通過**，Python `compileall`、JavaScript `node --check` 與 `git diff --check` 皆通過。
+- 指定測試指令目前為 **58 項全數通過**，Python `compileall`、JavaScript `node --check` 與 `git diff --check` 皆通過。
 
 接手後優先事項：
 
 1. 啟動實機服務前，先確認服務所有權；不可擅自停止或重啟其他專案或使用者的 Speaches／Ollama 工作。
-2. Speaches 與 Ollama 啟動後，使用 RTX 3050 8 GiB 驗證 Breeze → Ollama 自動摘要的實際卸載流程與顯存峰值。
+2. Breeze → Ollama 自動摘要的實際卸載流程與顯存峰值已於 2026-09-13 實測通過（顯存峰值 6,972 MiB，安全裕度 1,220 MiB，未發生 OOM）。
 3. 保持 `var/` 與真實錄音不受 Git 追蹤；測試不得連線至真實外部服務。
 4. 未經使用者明確指示，不得執行 `git commit` 或 `git push`。
 

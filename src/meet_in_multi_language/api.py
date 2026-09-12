@@ -4,22 +4,38 @@ import asyncio
 from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
+from urllib.parse import quote
 from uuid import uuid4
 
 import httpx
-from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import HTMLResponse
+from fastapi import (
+    BackgroundTasks,
+    FastAPI,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    Response,
+    UploadFile,
+)
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from .audio import AudioToolError, probe_audio
 from .config import Settings
+from .export import export_payload
 from .gpu import GpuWorkQueue
 from .models import Engine, EvaluationRun, RunStatus, TranscriptResult
 from .ollama_eval import AsyncOllamaClient
 from .speaches import PROFILES, AsyncSpeachesTranscriber
 from .storage import RunNotFoundError, RunStore
 from .transcription import AsyncOpenAITranscriber
-from .worker import add_corrected_revision, process_run_async, summarize_run_async
+from .worker import (
+    add_corrected_revision,
+    process_run_async,
+    rename_speaker_revision,
+    summarize_run_async,
+)
 
 
 ALLOWED_EXTENSIONS = {".mp3", ".mp4", ".mpeg", ".mpga", ".m4a", ".wav", ".webm"}
@@ -248,6 +264,76 @@ def create_app(
         try:
             return add_corrected_revision(
                 run_id, store, corrected_text, source_revision_id=source_revision_id
+            )
+        except RunNotFoundError as error:
+            raise HTTPException(status_code=404, detail="找不到這筆轉錄工作") from error
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+
+    @app.get("/api/runs/{run_id}/audio")
+    async def get_run_audio(run_id: str) -> FileResponse:
+        try:
+            run = store.get(run_id)
+        except RunNotFoundError as error:
+            raise HTTPException(status_code=404, detail="找不到這筆轉錄工作") from error
+
+        audio_path = store.audio_path(run.stored_filename)
+        if not audio_path.is_file():
+            raise HTTPException(status_code=404, detail="找不到對應的音訊檔案")
+
+        extension = audio_path.suffix.lower()
+        media_types = {
+            ".mp3": "audio/mpeg",
+            ".wav": "audio/wav",
+            ".m4a": "audio/mp4",
+            ".mp4": "video/mp4",
+            ".webm": "audio/webm",
+        }
+        media_type = media_types.get(extension, "application/octet-stream")
+        return FileResponse(
+            path=audio_path,
+            filename=run.original_filename,
+            media_type=media_type,
+        )
+
+    @app.get("/api/runs/{run_id}/export")
+    async def export_run(
+        run_id: str,
+        format: str = Query("txt", pattern="^(txt|srt|vtt|md|json)$"),
+        revision_id: str | None = Query(None),
+    ) -> Response:
+        try:
+            run = store.get(run_id)
+        except RunNotFoundError as error:
+            raise HTTPException(status_code=404, detail="找不到這筆轉錄工作") from error
+
+        try:
+            content, media_type, filename = export_payload(
+                run, format_name=format, revision_id=revision_id  # type: ignore[arg-type]
+            )
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+
+        encoded_filename = quote(filename)
+        headers = {
+            "Content-Disposition": f'attachment; filename="{encoded_filename}"; filename*=UTF-8\'\'{encoded_filename}'
+        }
+        return Response(content=content, media_type=media_type, headers=headers)
+
+    @app.post("/api/runs/{run_id}/speakers/rename", response_model=EvaluationRun)
+    async def rename_speaker(
+        run_id: str,
+        old_speaker: str = Form(...),
+        new_speaker: str = Form(...),
+        source_revision_id: str | None = Form(None),
+    ) -> EvaluationRun:
+        try:
+            return rename_speaker_revision(
+                run_id,
+                store,
+                old_speaker=old_speaker,
+                new_speaker=new_speaker,
+                source_revision_id=source_revision_id,
             )
         except RunNotFoundError as error:
             raise HTTPException(status_code=404, detail="找不到這筆轉錄工作") from error

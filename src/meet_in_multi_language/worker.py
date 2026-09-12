@@ -288,3 +288,53 @@ def add_corrected_revision(
         segments=corrected_segments,
     )
     return store.append_revision(run_id, corrected_rev)
+
+
+def rename_speaker_revision(
+    run_id: str,
+    store: RunStore,
+    old_speaker: str,
+    new_speaker: str,
+    source_revision_id: str | None = None,
+) -> EvaluationRun:
+    """將指定逐字稿版本中的某講者更名，並另存為人工校訂版（human_edited），嚴格保留 raw_asr。"""
+    run = store.get(run_id)
+    if not run.raw_asr:
+        raise ValueError("此工作尚未有原始 ASR 逐字稿")
+    new_speaker = new_speaker.strip()
+    if not new_speaker:
+        raise ValueError("新講者名稱不可為空")
+
+    source = run.result or run.raw_asr
+    if source_revision_id:
+        source = next(
+            (rev for rev in run.revisions if rev.revision_id == source_revision_id),
+            None,
+        )
+        if source is None:
+            raise ValueError(f"找不到來源逐字稿版本 {source_revision_id}")
+
+    target_old = old_speaker.strip()
+    matched_count = 0
+    new_segments: list[TranscriptSegment] = []
+    for seg in source.segments:
+        current_spk = (seg.speaker or "").strip()
+        if current_spk == target_old or (not target_old and not current_spk):
+            matched_count += 1
+            new_segments.append(seg.model_copy(update={"speaker": new_speaker}))
+        else:
+            new_segments.append(seg.model_copy())
+
+    if matched_count == 0:
+        raise ValueError(f"在版本 {source.revision_id} 中找不到講者「{old_speaker}」的發言段落")
+
+    new_rev = TranscriptResult(
+        provider="user",
+        model="manual-edit",
+        revision_kind=TranscriptRevisionKind.HUMAN_EDITED,
+        source_revision_id=source.revision_id,
+        text=source.text,
+        detected_languages=source.detected_languages,
+        segments=new_segments,
+    )
+    return store.append_revision(run_id, new_rev)

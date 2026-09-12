@@ -99,9 +99,35 @@ button.small { padding: 6px 12px; font-size: 0.85rem; font-weight: 600; }
 /* 模態框 / 校訂面板 */
 .correct-modal { margin-top: 10px; padding: 12px; background: #fdfdfd; border: 1px solid #d3dcd5; border-radius: 8px; display: grid; gap: 8px; }
 
+/* 音訊播放器 */
+.audio-player-wrapper { margin: 12px 0 16px; background: #edf4ef; padding: 10px 14px; border-radius: 10px; border: 1px solid #d0e0d5; display: flex; align-items: center; gap: 12px; }
+.audio-player-wrapper audio { width: 100%; height: 36px; outline: none; }
+.audio-player-wrapper .player-label { font-size: 0.85rem; font-weight: 700; color: #1c5234; white-space: nowrap; }
+
+/* 時間戳播放按鈕 */
+.segment-time-btn { background: none; border: 1px solid #c9d8ce; color: #1e5a37; border-radius: 4px; padding: 1px 6px; font-size: 0.75rem; font-family: monospace; font-weight: 600; cursor: pointer; transition: all .15s; }
+.segment-time-btn:hover { background: #176b43; color: #fff; border-color: #176b43; }
+
+/* 播放中與點選高亮 */
+.segment-row.active-playing { background: #eaf6ed; border-left: 3px solid #1a874f; }
+
+/* 講者標籤與改名 */
+.speaker-tag { background: #e8effa; color: #17428f; padding: 1px 6px; border-radius: 4px; font-weight: 600; cursor: pointer; }
+.speaker-tag:hover { text-decoration: underline; background: #d7e4f7; }
+
+/* 匯出群組 */
+.export-group { display: flex; align-items: center; gap: 6px; }
+.export-group select { padding: 5px 8px; font-size: 0.85rem; width: auto; }
+
+/* 講者更名面板 */
+.rename-modal { margin-top: 10px; padding: 12px; background: #f7faf8; border: 1px solid #cfe0d4; border-radius: 8px; display: grid; gap: 8px; }
+.rename-grid { display: grid; grid-template-columns: 1fr 1fr auto; gap: 8px; align-items: end; }
+
 @media (max-width: 640px) {
   main { margin: 16px auto; }
   .panel { padding: 16px; }
   .card-header { flex-direction: column; }
   .revision-toolbar { flex-direction: column; align-items: flex-start; }
+  .audio-player-wrapper { flex-direction: column; align-items: stretch; }
+  .rename-grid { grid-template-columns: 1fr; }
 }

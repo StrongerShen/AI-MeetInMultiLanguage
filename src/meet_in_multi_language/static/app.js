@@ -104,18 +104,28 @@ function validateEngineOption() {
 
 engineSelect.addEventListener("change", validateEngineOption);
 
-function renderSegments(segments) {
+function renderSegments(segments, runId) {
   if (!segments || !segments.length) return "<p>（無段落資訊）</p>";
   return segments.map((seg) => {
-    const timeStr = seg.start_ms != null ? `[${formatMs(seg.start_ms)}]` : "";
-    const speakerStr = seg.speaker ? `[${escapeHtml(seg.speaker)}]` : "";
+    const timeStr = seg.start_ms != null ? formatMs(seg.start_ms) : "";
+    const timeButton = timeStr ? `
+      <button type="button" class="segment-time-btn" title="點擊跳轉播放此段落" onclick="playAudioAt('${escapeHtml(runId)}', ${seg.start_ms || 0}, '${escapeHtml(seg.segment_id)}')">
+        ▶ ${escapeHtml(timeStr)}
+      </button>
+    ` : "";
+    const rawSpeaker = seg.speaker || "";
+    const speakerHtml = rawSpeaker ? `
+      <span class="speaker-tag" title="點擊更名此講者" onclick="openRenameSpeakerModal('${escapeHtml(runId)}', '${escapeHtml(rawSpeaker)}')">[${escapeHtml(rawSpeaker)}]</span>
+    ` : "";
     const flagsHtml = (seg.quality_flags || []).map(f => `<span class="quality-flag" title="品質警示">${escapeHtml(f)}</span>`).join("");
+    const startMs = seg.start_ms != null ? seg.start_ms : "";
+    const endMs = seg.end_ms != null ? seg.end_ms : (seg.start_ms != null ? seg.start_ms + 4000 : "");
     return `
-      <div class="segment-row" id="seg-row-${escapeHtml(seg.segment_id)}" data-seg-id="${escapeHtml(seg.segment_id)}">
+      <div class="segment-row" id="seg-row-${escapeHtml(seg.segment_id)}" data-seg-id="${escapeHtml(seg.segment_id)}" data-start-ms="${startMs}" data-end-ms="${endMs}">
         <span class="segment-meta">
           <span class="segment-tag">${escapeHtml(seg.segment_id)}</span>
-          ${timeStr ? `<span>${escapeHtml(timeStr)}</span>` : ""}
-          ${speakerStr ? `<span class="segment-speaker">${escapeHtml(speakerStr)}</span>` : ""}
+          ${timeButton}
+          ${speakerHtml}
         </span>
         <span class="segment-text">${escapeHtml(seg.text)}</span>
         ${flagsHtml}
@@ -202,7 +212,45 @@ window.highlightSegment = function(runId, segId) {
     card.querySelectorAll(".segment-row").forEach(r => r.classList.remove("highlighted"));
     el.classList.add("highlighted");
     el.scrollIntoView({ behavior: "smooth", block: "nearest" });
+
+    // 若有時間資訊，同步更新播放器位置
+    const startMs = Number(el.dataset.startMs);
+    if (!isNaN(startMs) && startMs > 0) {
+      const player = document.getElementById(`audio-player-${runId}`);
+      if (player && player.paused) {
+        player.currentTime = startMs / 1000;
+      }
+    }
   }
+};
+
+window.playAudioAt = function(runId, startMs, segId) {
+  const player = document.getElementById(`audio-player-${runId}`);
+  if (player) {
+    player.currentTime = (startMs || 0) / 1000;
+    player.play().catch(() => {});
+  }
+  if (segId) {
+    window.highlightSegment(runId, segId);
+  }
+};
+
+window.onAudioTimeUpdate = function(runId, currentTime) {
+  const card = document.getElementById(`run-card-${runId}`);
+  if (!card) return;
+  const currentMs = Math.floor(currentTime * 1000);
+  const rows = card.querySelectorAll(".segment-row");
+  rows.forEach(row => {
+    const start = Number(row.dataset.startMs);
+    const end = Number(row.dataset.endMs);
+    if (!isNaN(start) && !isNaN(end) && currentMs >= start && currentMs < end) {
+      if (!row.classList.contains("active-playing")) {
+        row.classList.add("active-playing");
+      }
+    } else {
+      row.classList.remove("active-playing");
+    }
+  });
 };
 
 window.triggerSummary = async function(runId) {
@@ -219,6 +267,15 @@ window.triggerSummary = async function(runId) {
   } catch (err) {
     alert(`網路連線失敗：${err.message}`);
   }
+};
+
+window.triggerExport = function(runId) {
+  const select = document.getElementById(`export-format-${runId}`);
+  const fmt = select ? select.value : "txt";
+  const revId = selectedRevisionPerRun[runId] || "";
+  const query = new URLSearchParams({ format: fmt });
+  if (revId) query.set("revision_id", revId);
+  window.open(`/api/runs/${runId}/export?${query.toString()}`, "_blank");
 };
 
 const openCorrectionPanels = new Set();
@@ -274,6 +331,59 @@ window.submitCorrection = async function(runId) {
   }
 };
 
+const openRenamePanels = new Set();
+const renameSpeakerDefaults = {};
+
+window.openRenameSpeakerModal = function(runId, defaultSpeaker) {
+  openRenamePanels.add(runId);
+  renameSpeakerDefaults[runId] = defaultSpeaker;
+  loadRuns();
+};
+
+window.toggleRenamePanel = function(runId) {
+  if (openRenamePanels.has(runId)) {
+    openRenamePanels.delete(runId);
+    delete renameSpeakerDefaults[runId];
+  } else {
+    openRenamePanels.add(runId);
+  }
+  loadRuns();
+};
+
+window.submitRenameSpeaker = async function(runId) {
+  const oldSpkInput = document.getElementById(`rename-old-${runId}`);
+  const newSpkInput = document.getElementById(`rename-new-${runId}`);
+  const oldSpk = oldSpkInput ? oldSpkInput.value.trim() : "";
+  const newSpk = newSpkInput ? newSpkInput.value.trim() : "";
+  if (!newSpk) {
+    alert("新講者名稱不可為空");
+    return;
+  }
+  const submitBtn = document.getElementById(`submit-rename-${runId}`);
+  if (submitBtn) submitBtn.disabled = true;
+
+  const body = new FormData();
+  body.append("old_speaker", oldSpk);
+  body.append("new_speaker", newSpk);
+  const sourceRevisionId = selectedRevisionPerRun[runId];
+  if (sourceRevisionId) body.append("source_revision_id", sourceRevisionId);
+
+  try {
+    const response = await fetch(`/api/runs/${runId}/speakers/rename`, { method: "POST", body });
+    if (!response.ok) {
+      alert(`更名失敗：${await readError(response)}`);
+      if (submitBtn) submitBtn.disabled = false;
+    } else {
+      openRenamePanels.delete(runId);
+      delete renameSpeakerDefaults[runId];
+      await loadRuns();
+    }
+  } catch (err) {
+    alert(`網路連線失敗：${err.message}`);
+    if (submitBtn) submitBtn.disabled = false;
+  }
+};
+
 window.switchRevision = function(runId, revisionId) {
   selectedRevisionPerRun[runId] = revisionId;
   delete correctionDrafts[runId];
@@ -281,19 +391,28 @@ window.switchRevision = function(runId, revisionId) {
 };
 
 async function loadRuns() {
-  let activeTextareaId = null;
+  let activeInputId = null;
   let selStart = null;
   let selEnd = null;
   if (
     document.activeElement &&
-    document.activeElement.tagName === "TEXTAREA" &&
+    (document.activeElement.tagName === "TEXTAREA" || document.activeElement.tagName === "INPUT") &&
     document.activeElement.id &&
-    document.activeElement.id.startsWith("correction-text-")
+    (document.activeElement.id.startsWith("correction-text-") || document.activeElement.id.startsWith("rename-"))
   ) {
-    activeTextareaId = document.activeElement.id;
+    activeInputId = document.activeElement.id;
     selStart = document.activeElement.selectionStart;
     selEnd = document.activeElement.selectionEnd;
   }
+
+  const playingStates = {};
+  document.querySelectorAll("audio[id^='audio-player-']").forEach(player => {
+    const rId = player.id.replace("audio-player-", "");
+    playingStates[rId] = {
+      paused: player.paused,
+      currentTime: player.currentTime,
+    };
+  });
 
   let runs;
   try {
@@ -323,6 +442,7 @@ async function loadRuns() {
     }).join("");
 
     const isPanelOpen = openCorrectionPanels.has(run.run_id);
+    const isRenameOpen = openRenamePanels.has(run.run_id);
     const draftText = correctionDrafts[run.run_id] !== undefined ? correctionDrafts[run.run_id] : currentRev?.text || "";
 
     return `
@@ -340,6 +460,13 @@ async function loadRuns() {
           </span>
         </div>
 
+        ${run.stored_filename ? `
+          <div class="audio-player-wrapper">
+            <span class="player-label">音訊回聽：</span>
+            <audio id="audio-player-${escapeHtml(run.run_id)}" controls preload="metadata" src="/api/runs/${escapeHtml(run.run_id)}/audio" ontimeupdate="onAudioTimeUpdate('${escapeHtml(run.run_id)}', this.currentTime)"></audio>
+          </div>
+        ` : ""}
+
         ${run.error ? `<p class="status error">${escapeHtml(run.error)}</p>` : ""}
 
         ${currentRev ? `
@@ -352,7 +479,36 @@ async function loadRuns() {
               ${currentRev.revision_kind === "raw_asr" ? `<span class="raw-badge" title="受保護版本，不可覆蓋">原始稿 (raw_asr)</span>` : ""}
             </div>
             <div class="revision-actions">
-              <button type="button" class="small secondary" onclick="toggleCorrectionPanel('${escapeHtml(run.run_id)}')">建立人工校訂版</button>
+              <button type="button" class="small secondary" onclick="toggleRenamePanel('${escapeHtml(run.run_id)}')">更名講者</button>
+              <button type="button" class="small secondary" onclick="toggleCorrectionPanel('${escapeHtml(run.run_id)}')">文字校訂</button>
+              <div class="export-group">
+                <select id="export-format-${escapeHtml(run.run_id)}">
+                  <option value="txt">純文字 (.txt)</option>
+                  <option value="srt">字幕檔 (.srt)</option>
+                  <option value="vtt">WebVTT (.vtt)</option>
+                  <option value="md">會議報告 (.md)</option>
+                  <option value="json">結構資料 (.json)</option>
+                </select>
+                <button type="button" class="small" onclick="triggerExport('${escapeHtml(run.run_id)}')">匯出下載</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="rename-modal" id="rename-panel-${escapeHtml(run.run_id)}" style="display: ${isRenameOpen ? 'grid' : 'none'};">
+            <label><strong>更名講者（另存為新版本，保護原始 ASR 逐字稿）：</strong></label>
+            <div class="rename-grid">
+              <div>
+                <label class="hint">欲替換的原始講者：</label>
+                <input type="text" id="rename-old-${escapeHtml(run.run_id)}" value="${escapeHtml(renameSpeakerDefaults[run.run_id] || '')}" placeholder="例如 SPEAKER_00" />
+              </div>
+              <div>
+                <label class="hint">新講者名稱：</label>
+                <input type="text" id="rename-new-${escapeHtml(run.run_id)}" placeholder="例如 主席 或 王經理" />
+              </div>
+              <div>
+                <button type="button" class="small" id="submit-rename-${escapeHtml(run.run_id)}" onclick="submitRenameSpeaker('${escapeHtml(run.run_id)}')">確認更名</button>
+                <button type="button" class="small secondary" onclick="toggleRenamePanel('${escapeHtml(run.run_id)}')">取消</button>
+              </div>
             </div>
           </div>
 
@@ -366,7 +522,7 @@ async function loadRuns() {
           </div>
 
           <div class="transcript-box">
-            ${renderSegments(currentRev.segments)}
+            ${renderSegments(currentRev.segments, run.run_id)}
           </div>
         ` : (run.status === "queued" || run.status === "transcribing" ? `<p class="hint">正在排隊／轉錄音訊中，請稍候…</p>` : "")}
 
@@ -375,8 +531,18 @@ async function loadRuns() {
     `;
   }).join("");
 
-  if (activeTextareaId) {
-    const activeEl = document.getElementById(activeTextareaId);
+  for (const [rId, state] of Object.entries(playingStates)) {
+    const player = document.getElementById(`audio-player-${rId}`);
+    if (player) {
+      player.currentTime = state.currentTime;
+      if (!state.paused) {
+        player.play().catch(() => {});
+      }
+    }
+  }
+
+  if (activeInputId) {
+    const activeEl = document.getElementById(activeInputId);
     if (activeEl) {
       activeEl.focus();
       if (typeof selStart === "number" && typeof selEnd === "number") {

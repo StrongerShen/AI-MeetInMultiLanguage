@@ -350,3 +350,142 @@ def test_async_openai_transcriber_aclose() -> None:
     transcriber = AsyncOpenAITranscriber("test-key", client=FakeAsyncClient())
     asyncio.run(transcriber.aclose())
     assert closed is True
+
+
+def test_get_run_audio_endpoint(tmp_path: Path) -> None:
+    from meet_in_multi_language import api
+    from meet_in_multi_language.models import EvaluationRun, RunStatus
+
+    app = api.create_app(Settings(tmp_path, 1024 * 1024, "test-key"))
+    store = api.RunStore(tmp_path)
+    audio_path = store.audio_path("test-audio.wav")
+    audio_path.write_bytes(wav_bytes())
+
+    store.save(
+        EvaluationRun(
+            run_id="run-audio-test",
+            original_filename="original.wav",
+            stored_filename="test-audio.wav",
+            engine=Engine.TRANSCRIBE,
+            status=RunStatus.COMPLETED,
+        )
+    )
+
+    async def exercise_api() -> tuple[httpx.Response, httpx.Response]:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            resp_found = await client.get("/api/runs/run-audio-test/audio")
+            resp_missing = await client.get("/api/runs/non-existent/audio")
+            return resp_found, resp_missing
+
+    resp_found, resp_missing = asyncio.run(exercise_api())
+    assert resp_found.status_code == 200
+    assert resp_found.content == wav_bytes()
+    assert resp_missing.status_code == 404
+
+
+def test_export_run_endpoint(tmp_path: Path) -> None:
+    from meet_in_multi_language import api
+    from meet_in_multi_language.models import EvaluationRun, RunStatus, TranscriptSegment
+
+    app = api.create_app(Settings(tmp_path, 1024 * 1024, "test-key"))
+    store = api.RunStore(tmp_path)
+    rev = TranscriptResult(
+        revision_id="rev-export",
+        provider="breeze",
+        model="breeze",
+        text="測試文字",
+        segments=[
+            TranscriptSegment(
+                segment_id="seg-001",
+                start_ms=1000,
+                end_ms=3000,
+                speaker="SPEAKER_00",
+                text="測試文字",
+            )
+        ],
+    )
+    store.save(
+        EvaluationRun(
+            run_id="run-export-test",
+            original_filename="sample.mp3",
+            stored_filename="sample.mp3",
+            engine=Engine.BREEZE,
+            status=RunStatus.COMPLETED,
+            raw_asr=rev,
+            revisions=[rev],
+            result=rev,
+        )
+    )
+
+    async def exercise_api() -> tuple[httpx.Response, httpx.Response, httpx.Response]:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            srt_resp = await client.get("/api/runs/run-export-test/export?format=srt")
+            md_resp = await client.get("/api/runs/run-export-test/export?format=md")
+            invalid_resp = await client.get("/api/runs/run-export-test/export?format=pdf")
+            return srt_resp, md_resp, invalid_resp
+
+    srt_resp, md_resp, invalid_resp = asyncio.run(exercise_api())
+    assert srt_resp.status_code == 200
+    assert "00:00:01,000 --> 00:00:03,000" in srt_resp.text
+    assert md_resp.status_code == 200
+    assert "# 會議逐字稿與摘要報告" in md_resp.text
+    assert invalid_resp.status_code == 422  # format query regex validation failed
+
+
+def test_rename_speaker_endpoint(tmp_path: Path) -> None:
+    from meet_in_multi_language import api
+    from meet_in_multi_language.models import (
+        EvaluationRun,
+        RunStatus,
+        TranscriptRevisionKind,
+        TranscriptSegment,
+    )
+
+    app = api.create_app(Settings(tmp_path, 1024 * 1024, "test-key"))
+    store = api.RunStore(tmp_path)
+    rev = TranscriptResult(
+        revision_id="rev-spk",
+        provider="speaches",
+        model="breeze",
+        revision_kind=TranscriptRevisionKind.RAW_ASR,
+        text="發言內容",
+        segments=[
+            TranscriptSegment(
+                segment_id="seg-001",
+                start_ms=1000,
+                end_ms=3000,
+                speaker="SPEAKER_00",
+                text="發言內容",
+            )
+        ],
+    )
+    store.save(
+        EvaluationRun(
+            run_id="run-spk-test",
+            original_filename="sample.mp3",
+            stored_filename="sample.mp3",
+            engine=Engine.BREEZE,
+            status=RunStatus.COMPLETED,
+            raw_asr=rev,
+            revisions=[rev],
+            result=rev,
+        )
+    )
+
+    async def exercise_api() -> httpx.Response:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            return await client.post(
+                "/api/runs/run-spk-test/speakers/rename",
+                data={"old_speaker": "SPEAKER_00", "new_speaker": "王董事長"},
+            )
+
+    resp = asyncio.run(exercise_api())
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data["revisions"]) == 2
+    assert data["raw_asr"]["segments"][0]["speaker"] == "SPEAKER_00"  # raw_asr 絕對不變
+    assert data["revisions"][1]["segments"][0]["speaker"] == "王董事長"
+    assert data["result"]["segments"][0]["speaker"] == "王董事長"
