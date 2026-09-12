@@ -8,17 +8,42 @@
 
 ## 目前進度：P1 品質原型
 
-已建立第一個可執行骨架：FastAPI Web 頁面可上傳短音檔並呼叫候選轉錄模型，轉錄工作與標準化結果保存在本機 `var/`；命令列工具可將長錄音轉為 16 kHz 單聲道、切成有原檔時間偏移的片段、自動合併，並計算 CER／WER。另有固定測試稿的 Ollama 摘要比較工具。這仍是評測工具，Web 尚未串接完整摘要與正式使用者系統。
+已建立可執行的 Web 原型與批次評測工具：
+- **Web 原型介面**：FastAPI 提供錄音上傳（最大 25 MB）、工作排程、逐字稿檢閱與結構化摘要分析。
+- **雙路轉錄候選**：支援雲端 OpenAI 轉錄（含講者辨識／混語提示），以及本機 **Breeze ASR**（`paulpengtw/faster-whisper-Breeze-ASR-26`）。使用 Breeze ASR 時**無需 `OPENAI_API_KEY`**。
+- **逐字稿版本控制與 raw_asr 保護**：ASR 原始辨識稿永久以 `revision_kind = "raw_asr"` 寫入 `EvaluationRun.raw_asr`，儲存層會拒絕修改、清除或從 `revisions` 移除原始版本。Web 人工校訂一律追加為 `human_edited`，並記錄來源版本。
+- **Ollama 繁體中文結構化摘要**：整合本機 Ollama（預設 `qwen3.5:9b`，可選 `qwen3.8:latest`）自動或手動產生會議總覽、討論議題、重大決議、待辦事項（含負責人與期限）及未解問題。長逐字稿會先分段摘要再整合；正式寫入前會拒絕無效引用、格式錯誤與非臺灣慣用詞彙。
+- **單一 GPU 互斥工作佇列（`GpuWorkQueue`）**：為解決 RTX 3050 (8 GiB) 顯存限制，同一 Web 行程的 Breeze 與 Ollama 工作會序列化。由本佇列完成的兩類工作互相切換時，會卸載明確指定的 Ollama 模型，或透過 Speaches `/api/ps/{model_id}` 卸載 ASR 模型；卸載失敗時會停止下一階段，避免冒險載入造成 CUDA OOM。多 Web 行程與外部推論程式仍須由部署層共用同一工作佇列。
+- **命令列評測工具**：支援長音檔正規化切段（`meet-eval prepare`）、批次轉錄（`meet-eval transcribe`、`meet-eval speaches-transcribe`）、多模型摘要基準評測（`meet-eval ollama-benchmark`），以及 CER／WER 計算（`meet-eval score`）。
 
-需求：Python 3.12、[uv](https://docs.astral.sh/uv/)、FFmpeg，以及可用的 `OPENAI_API_KEY`。金鑰只設定於伺服器環境，不放入瀏覽器或 Git。
+### 需求與啟動方式
+
+需求：Python 3.12、[uv](https://docs.astral.sh/uv/)、FFmpeg。若使用雲端轉錄才需設定 `OPENAI_API_KEY`；純本機推論（Breeze ASR + Ollama）無需金鑰。金鑰只設定於伺服器環境，不放入瀏覽器或 Git。
 
 ```bash
 uv sync
+
+# 若僅使用本機 Breeze ASR 與 Ollama 摘要，直接啟動即可：
+uv run uvicorn meet_in_multi_language.api:app --reload
+
+# 若需評測雲端 OpenAI 轉錄，設定金鑰後啟動：
 export OPENAI_API_KEY='你的 API 金鑰'
 uv run uvicorn meet_in_multi_language.api:app --reload
 ```
 
-開啟 `http://127.0.0.1:8000`。目前依 Transcriptions API 的直接上傳限制，Web 原型接受最大 25 MB；完整會議先用下列指令切段：
+開啟 `http://127.0.0.1:8000` 即可操作 Web 原型。
+
+### 執行測試規範
+
+專案執行自動化測試時，**必須指定專用暫存快取目錄**：
+
+```bash
+UV_CACHE_DIR=/tmp/ai-meet-uv-cache uv run pytest
+```
+
+目前共有 47 項自動化測試，涵蓋 GPU 互斥與模型精確卸載／切換、原始稿不可變與一致性、儲存層路徑防護、服務端點與防重、摘要證據引用正規化驗證、長稿分層摘要及人工校訂版本。
+
+評測資料、真實錄音、金鑰與執行結果（`var/`）皆在 `.gitignore` 排除範圍內，**嚴禁提交至 Git**。
 
 ```bash
 uv run meet-eval prepare /path/to/meeting.mp3 ./var/eval/meeting
@@ -66,9 +91,9 @@ uv run meet-eval ollama-benchmark eval/fixtures/meeting.zh-Hant-TW.txt \
 | `gemma4:12b` | 通過全部結構檢查 | 159.7 秒 | 5.5 token/s | 把「下週五」錯算為 2026-09-19，且漏列摘要格式決議 |
 | `muse-glimmer:latest`（27.9B Q4_K_M） | 失敗 | 逾時 600 秒 | — | 沒有取得可評分輸出，暫不納入候選 |
 
-P1 暫定以 `qwen3.5:9b` 作為互動開發／快速草稿預設，`qwen3.8:latest` 作為低頻率的品質對照，不選 `gemma4:12b` 或 `muse-glimmer:latest`。這只是合成逐字稿單次測試，尚未取代真實會議評測；後續要加入多次重跑、人工事實標註、長逐字稿分層摘要及整體處理時間。27B Q4 模型可放入目前 46.9 GiB 系統 RAM，但無法完整放入 8 GiB 顯存；本次延遲應解讀為目前 CPU／GPU 分攤配置的實測，不是系統 RAM 容量不足。
+P1 暫定以 `qwen3.5:9b` 作為互動開發／快速草稿預設，`qwen3.8:latest` 作為低頻率的品質對照，不選 `gemma4:12b` 或 `muse-glimmer:latest`。這只是合成逐字稿單次測試，尚未取代真實會議評測；Web 摘要已加入長逐字稿分層處理，後續仍要加入多次重跑、人工事實標註及整體處理時間。27B Q4 模型可放入目前 46.9 GiB 系統 RAM，但無法完整放入 8 GiB 顯存；本次延遲應解讀為目前 CPU／GPU 分攤配置的實測，不是系統 RAM 容量不足。
 
-同日以 `/home/stronger/音樂/260909_1631.mp3` 實測 Breeze：原檔長 82 分 36 秒，切成 9 段後成功合併為 168 段、19,514 字的 `raw_asr` 結果。已知開頭／結尾非語音區產生大量「謝謝」重覆幻覺；品質旗標會標出高重覆、高 no-speech probability 與高 compression ratio，但不刪除原始文字。含人聲 100 秒 A/B 中，開 VAD 只留下「真好聽」，關閉 VAD 則保留完整財務報告內容，因此目前 Breeze 預設關閉 VAD；相反地，前 60 秒非語音片段在開 VAD 後能正確輸出空白。結論是現有 VAD 門檻不能全域套用，需另做分段 gate 或調校。
+同日以 `/home/stronger/音樂/260909_1631.mp3` 實測 Breeze：原檔長 82 分 36 秒，切成 9 段後成功合併為 168 段、19,514 字的 `raw_asr` 結果。已知開頭／結尾非語音區產生大量「謝謝」重複幻覺；品質旗標會標出高重複、高 no-speech probability 與高 compression ratio，但不刪除原始文字。含人聲 100 秒 A/B 中，開 VAD 只留下「真好聽」，關閉 VAD 則保留完整財務報告內容，因此目前 Breeze 預設關閉 VAD；相反地，前 60 秒非語音片段在開 VAD 後能正確輸出空白。結論是現有 VAD 門檻不能全域套用，需另做分段 gate 或調校。
 
 RTX 3050 上必須讓大型 Ollama 模型與 Breeze ASR 互斥使用顯存。實測 `qwen3.5:9b` 占用約 6.3 GiB 時，Speaches 重新載入 Breeze 會發生 CUDA OOM；正式 worker 應使用單一 GPU 工作佇列，切換階段時先確認前一模型已釋放，再載入下一模型。系統不可自行停止無法確認擁有者的既有推論工作。
 
@@ -215,23 +240,32 @@ LLM 的臺語同音字校正只能產生「校正版」，不得覆蓋 ASR 原�
 
 以上於 2026-09-12 查核；實作串接前重新確認 API 契約。摘要模型於同一套真實逐字稿上比較事實正確性、引用及成本，暫不鎖定供應商。尚未進行付費呼叫或上傳會議內容。
 
-## 6. 核心資料與 API 草案
+## 6. 核心資料與 API
 
-| 資料 | 核心欄位／規則 |
+### P1 目前 Web 已實作之 API 端點
+
+原型已提供完整前後端互動與背景非同步處理端點：
+
+| 方法與路徑 | 用途與說明 |
 | --- | --- |
-| Meeting | ID、擁有者、標題、開始時間／時區（可未知）、詞彙表、保存期限 |
-| AudioAsset | 會議 ID、原檔／衍生檔位置、雜湊、時長、聲道、切段原時間偏移 |
-| Job | 會議 ID、階段、嘗試次數、輸入版本、模型／設定、錯誤、耗時及用量 |
-| Speaker | 會議內 ID、匿名標籤、人工姓名對應；不跨會議追蹤身分 |
-| TranscriptRevision | 不可變版本 ID、父版本、作者、時間、處理／校訂來源 |
-| Segment | 版本 ID、段落 ID、start_ms／end_ms、speaker_id、多語標籤、原文、品質標記 |
-| Translation | 來源版本／段落、目標語言、譯文、模型及版本 |
-| AnalysisRevision | 來源逐字稿版本、總覽、議題、決議、待辦、未解問題、審核狀態 |
-| Evidence | 分析項目 ID、來源版本與段落 ID、引用文字；起迄時間由來源解析 |
+| `GET /api/health` | 實際探測 Speaches／Ollama 是否可連線，並取得 OpenAI 配置、上傳大小上限及 **GPU 互斥工作佇列即時資訊**（`is_busy`、`active_task`、`queue_length` 等） |
+| `GET /api/runs` | 列出所有工作紀錄（含逐字稿版本與摘要），依建立時間倒序排序 |
+| `GET /api/runs/{id}` | 取得指定工作之完整紀錄（含 `raw_asr`、`revisions`、`result`、`summary`） |
+| `GET /api/runs/{id}/revisions` | 取得指定工作之所有逐字稿修訂版本列表 |
+| `POST /api/runs` | 上傳音訊檔案並排入轉錄工作。支援 `engine`（`breeze`、`gpt-4o-transcribe-diarize`、`gpt-transcribe`）、`keywords`、`auto_summary`、`summary_model`；Breeze ASR 自動受 GPU 佇列保護且無需 OpenAI 金鑰 |
+| `POST /api/runs/{id}/summary` | 手動觸發或重新以 Ollama 產生結構化摘要，排入 GPU 佇列執行，支援指定摘要模型及基準逐字稿版本 |
+| `POST /api/runs/{id}/revisions/correct` | 依指定逐字稿版本另存人工校訂版（`human_edited`），**嚴格保留 `raw_asr`，絕對不予覆蓋** |
 
-模型信心分數若不可取得就留空；不同來源的分數不直接比較，不以文字模型自評冒充辨識可信度。待確認標記可來自重疊發言、對齊失敗、缺失時間戳、模型差異或人工檢閱。
+### P1 核心資料模型（Pydantic）
 
-API 路由為設計草案，尚未實作：
+- **`EvaluationRun`**：工作識別碼 `run_id`、原始檔名、儲存檔名、轉錄引擎 `engine`、目前狀態 `status`（`queued`、`transcribing`、`summarizing`、`completed`、`failed`）、`keywords`、`auto_summary`、`summary_model`、原始辨識稿 `raw_asr`（受保護不可變）、版本清單 `revisions`、當前展示稿 `result`、結構化摘要 `summary`、錯誤訊息 `error`。
+- **`TranscriptResult`**：版本識別碼 `revision_id`、供應商 `provider`、模型名稱 `model`、版本類型 `revision_kind`（`raw_asr`、`llm_corrected`、`human_edited`）、來源版本 `source_revision_id`、全文 `text`、語言標記、段落清單 `segments`、建立時間 `created_at`。
+- **`TranscriptSegment`**：段落識別碼 `segment_id`（如 `seg-001`）、起迄時間（`start_ms`、`end_ms`）、講者標籤 `speaker`、文字 `text`、品質警示旗標 `quality_flags`（如重複幻覺等）。
+- **`SummaryResult`**：摘要模型 `model`、來源逐字稿版本 `source_revision_id`、總覽 `overview`、議題 `topics`、決議 `decisions`、待辦事項 `action_items`（含負責人與期限）、未解問題 `open_questions`。所有子項目皆包含來源段落參照 `evidence_ids`。
+
+### 未來完整產品之 API 草案（規劃中）
+
+以下為未來正式版本（含正式會議儲存庫、完整使用者帳號、雲端物件儲存與長音檔切段）之設計草案：
 
 | 方法與路徑 | 用途 |
 | --- | --- |
@@ -277,7 +311,7 @@ API 路由為設計草案，尚未實作：
 | 臺灣繁體中文譯文 | 臺語原文與譯文逐段對照；驗收樣本中的否定、數字、人物與條件不得反轉或新增 |
 | 混語 | 單獨報告語言切換附近的漏字、錯譯、語言替換；關鍵人名／數字／否定詞正確率 ≥ 95% |
 | 講者與時間 | 非重疊段落 DER ≤ 15%（容許邊界 250 ms）；重疊段落另外報告，不能排除後宣稱整體達標；95% 抽查段落邊界誤差 ≤ 2 秒 |
-| 摘要證據 | 決議／待辦引用 ID 有效率 100%；人工檢查引用支持其敘述的比例 ≥ 95% |
+| 摘要證據 | 決議／待辦引用 ID 有效率 100%；人工檢查引用足以佐證其敘述的比例 ≥ 95% |
 | 摘要完整性 | 人工標註的重要決議／待辦召回率 ≥ 90%；驗收集不容許捏造負責人、期限或已定案結論 |
 | 可用性 | 逐字稿可校訂、講者可改名、來源可回聽、匯出可重開；修訂後可識別過期摘要 |
 | 失敗處理 | 超限／損壞／無語音檔有明確結果；重試不覆蓋人工版本；刪除後工作不得重新建立資料 |
@@ -292,7 +326,7 @@ API 路由為設計草案，尚未實作：
 | 階段 | 工作產物 | 進入下一階段的條件 |
 | --- | --- | --- |
 | P0：需求與樣本 | Web、會後上傳、雲端 API、臺語漢字加臺灣繁體中文譯文已確認；補充容量／預算，建立標註規範與樣本清單 | 取得可測試的錄音與人工對照，明確列出驗收目標 |
-| P1：品質原型 | 建立離線評測流程，比較至少兩種可行轉錄方案及摘要候選，產出品質／成本報告 | 臺語、混語、講者與摘要有可重現數據；選定方案或提出缺口 |
+| P1：品質原型 | 建立離線評測流程，比較至少兩種可行轉錄方案及摘要候選，產出品質／成本報告 | 臺語、混語、講者與摘要有可重現量測資料；選定方案或提出缺口 |
 | P2：處理核心 | 音訊接收、背景工作、切段合併、版本化逐字稿、摘要證據、JSON／文字匯出 | 一場完整會議端到端可重跑；失敗可恢復，原文可追溯 |
 | P3：檢閱介面 | 上傳／進度、同步回聽、校訂／講者命名、摘要檢閱、字幕匯出 | 使用者能完成上傳到確認匯出的完整流程 |
 | P4：試用驗收 | 真實會議回歸測試、存取／刪除測試、成本與效能量測、部署說明 | 達到商定驗收門檻，已知限制明示後開始小範圍使用 |
@@ -335,6 +369,26 @@ API 路由為設計草案，尚未實作：
 - 回到 `gpt-6-astra`：重大架構決策、隱私/資安設計、跨多模組規劃、難以釐清的品質問題。
 - 使用 `gpt-5.6-sol`：一般實作、除錯、測試、程式碼審查與文件更新。
 - 使用 `gpt-5.6-terra`：範圍明確、可重複且量大的小型任務。
+
+## AGY／Gemini 交接狀態
+
+自 2026-09-12 起，後續複查與實作可交由 AGY CLI 的 `gemini-3.8-flash-high` 接手。接手者必須先閱讀本文件、`git status`、最近的 `git log` 與完整未提交差異，不得把目前工作樹誤認成已提交版本。
+
+目前未提交的 P1 工作已完成以下防護：
+
+- `raw_asr` 由儲存層強制不可修改、清除或從版本清單移除；首次建立與後續更新皆強制要求 `revisions` 保留原稿；防範路徑穿越。
+- GPU 佇列會處理等待取消與任務例外；精確追蹤前次實際使用的模型（包含自訂 Ollama 模型如 `qwen3.8:latest`），同為 Ollama 類別但模型更換時主動釋放顯存，並容忍服務未啟動與 404 已釋放狀態。
+- 摘要寫入前會驗證完整 JSON 結構、來源段落 ID 與臺灣用語；容忍模型輸出帶方括號或空白之 evidence ID 並自動標準化為 `seg-001`；長逐字稿採分段摘要後整合。
+- 前端摘要引用不再把模型輸出插入 inline JavaScript；人工校訂稿會記錄來源版本，且全文與顯示段落一致；輪詢時維持校訂面板展開狀態、草稿與輸入焦點。
+- 健康端點會實際探測 Speaches 與 Ollama；API 摘要端點加入 409 處理中防重；非同步 HTTP client 與轉錄器已加入關閉處理。
+- 指定測試指令目前為 **47 項通過**，Python `compileall`、JavaScript `node --check` 與 `git diff --check` 皆通過。
+
+接手後優先事項：
+
+1. 啟動實機服務前，先確認服務所有權；不可擅自停止或重啟其他專案或使用者的 Speaches／Ollama 工作。
+2. Speaches 與 Ollama 啟動後，使用 RTX 3050 8 GiB 驗證 Breeze → Ollama 自動摘要的實際卸載流程與顯存峰值。
+3. 保持 `var/` 與真實錄音不受 Git 追蹤；測試不得連線至真實外部服務。
+4. 未經使用者明確指示，不得執行 `git commit` 或 `git push`。
 
 ## 參考
 

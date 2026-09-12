@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -140,3 +141,10 @@ class AsyncOpenAITranscriber:
                 **request,
             )
             return _standard_result(response)
+
+    async def aclose(self) -> None:
+        close = getattr(self._client, "close", None)
+        if callable(close):
+            res = close()
+            if asyncio.iscoroutine(res):
+                await res

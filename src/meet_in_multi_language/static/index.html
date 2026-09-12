@@ -10,38 +10,83 @@
     <main>
       <header>
         <p class="eyebrow">品質原型 P1</p>
-        <h1>多語會議逐字稿</h1>
-        <p>上傳中、英、日、臺語混合的短錄音，比較轉錄結果並建立正式驗收資料。</p>
+        <h1>多語會議逐字稿與摘要系統</h1>
+        <p>支援臺灣華語、英語、日本語與臺灣話（臺語）混合錄音。保留原始 ASR 逐字稿，不以 LLM 校訂版覆蓋；整合 Breeze ASR、Ollama 結構化摘要及單一 GPU 互斥工作佇列。</p>
       </header>
+
+      <section class="panel system-dashboard">
+        <div class="system-status-header">
+          <h2>系統狀態與 GPU 互斥佇列</h2>
+          <span id="gpu-badge" class="badge">檢查中…</span>
+        </div>
+        <div class="status-grid">
+          <div class="status-item">
+            <span class="label">轉錄服務 (Speaches)</span>
+            <span id="speaches-status" class="value">檢查中…</span>
+          </div>
+          <div class="status-item">
+            <span class="label">摘要服務 (Ollama)</span>
+            <span id="ollama-status" class="value">檢查中…</span>
+          </div>
+          <div class="status-item">
+            <span class="label">雲端 API (OpenAI)</span>
+            <span id="openai-status" class="value">檢查中…</span>
+          </div>
+          <div class="status-item">
+            <span class="label">GPU 佇列狀態</span>
+            <span id="gpu-queue-detail" class="value">閒置中</span>
+          </div>
+        </div>
+        <p id="service-status" class="status">正在檢查伺服器環境…</p>
+      </section>
 
       <section class="panel">
         <h2>建立轉錄工作</h2>
-        <p id="service-status" class="status">正在檢查服務設定…</p>
         <form id="upload-form">
           <label>
             音訊檔案
             <input name="audio" type="file" accept="audio/*,.mp4,.webm" required />
+            <small class="hint">支援 WAV、MP3、M4A 等格式，目前原型單檔上限 25 MB。</small>
           </label>
+
           <label>
-            轉錄方式
-            <select name="engine">
-              <option value="gpt-4o-transcribe-diarize">含講者與段落時間</option>
-              <option value="gpt-transcribe">混語與詞彙提示</option>
+            轉錄引擎
+            <select name="engine" id="engine-select">
+              <option value="breeze" selected>Breeze ASR（本機臺語／國臺混用微調模型，需 GPU 互斥）</option>
+              <option value="gpt-4o-transcribe-diarize">OpenAI Diarize（含講者與段落時間）</option>
+              <option value="gpt-transcribe">OpenAI Transcribe（混語與詞彙提示）</option>
             </select>
           </label>
+
           <label>
-            專有名詞（每行一個；含講者模式不使用）
-            <textarea name="keywords" rows="4" placeholder="產品名稱&#10;人名&#10;專案代號"></textarea>
+            專有名詞與關鍵詞（每行一個，供熱詞輔助辨識）
+            <textarea name="keywords" rows="3" placeholder="產品名稱&#10;人名&#10;專案代號"></textarea>
           </label>
-          <button type="submit">上傳並開始轉錄</button>
+
+          <div class="summary-options-panel">
+            <label class="checkbox-label">
+              <input type="checkbox" name="auto_summary" id="auto-summary-checkbox" checked />
+              轉錄完成後自動排入 GPU 互斥佇列進行 Ollama 摘要
+            </label>
+
+            <label class="summary-model-select-wrapper">
+              摘要模型
+              <select name="summary_model" id="summary-model-select">
+                <option value="qwen3.5:9b" selected>qwen3.5:9b（速度佳、結構完整，預設）</option>
+                <option value="qwen3.8:latest">qwen3.8:latest（內容最完整、低頻率品質對照）</option>
+              </select>
+            </label>
+          </div>
+
+          <button type="submit" id="submit-button">上傳並加入佇列</button>
         </form>
         <p id="form-message" role="status"></p>
       </section>
 
       <section class="panel">
         <div class="section-heading">
-          <h2>最近工作</h2>
-          <button id="refresh-button" class="secondary" type="button">重新整理</button>
+          <h2>工作紀錄與逐字稿檢閱</h2>
+          <button id="refresh-button" class="secondary" type="button">手動重新整理</button>
         </div>
         <div id="run-list" class="run-list" aria-live="polite"></div>
       </section>
@@ -49,4 +94,3 @@
     <script src="/static/app.js" defer></script>
   </body>
 </html>
-

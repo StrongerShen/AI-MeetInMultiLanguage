@@ -6,4 +6,12 @@
 __pycache__/
 *.py[cod]
 var/
+*.mp3
+*.wav
+*.m4a
+*.ogg
+*.flac
+*.aac
+*.webm
+*.mp4
 

@@ -1,52 +1,99 @@
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Awaitable, Callable
+from contextlib import asynccontextmanager
 from pathlib import Path
 from uuid import uuid4
 
+import httpx
 from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import HTMLResponse, Response
+from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
 
 from .audio import AudioToolError, probe_audio
 from .config import Settings
-from .models import Engine, EvaluationRun, RunStatus
+from .gpu import GpuWorkQueue
+from .models import Engine, EvaluationRun, RunStatus, TranscriptResult
+from .ollama_eval import AsyncOllamaClient
+from .speaches import PROFILES, AsyncSpeachesTranscriber
 from .storage import RunNotFoundError, RunStore
 from .transcription import AsyncOpenAITranscriber
-from .worker import process_run_async
+from .worker import add_corrected_revision, process_run_async, summarize_run_async
 
 
 ALLOWED_EXTENSIONS = {".mp3", ".mp4", ".mpeg", ".mpga", ".m4a", ".wav", ".webm"}
 PACKAGE_DIR = Path(__file__).parent
 STATIC_DIR = PACKAGE_DIR / "static"
-STATIC_ASSETS = {
-    "app.js": ("text/javascript; charset=utf-8", (STATIC_DIR / "app.js").read_text(encoding="utf-8")),
-    "styles.css": ("text/css; charset=utf-8", (STATIC_DIR / "styles.css").read_text(encoding="utf-8")),
-}
-INDEX_HTML = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
 
 
-def create_app(settings: Settings | None = None) -> FastAPI:
+async def _probe_url(url: str) -> bool:
+    try:
+        async with httpx.AsyncClient(timeout=1.0) as client:
+            response = await client.get(url)
+            return response.is_success
+    except httpx.HTTPError:
+        return False
+
+
+def create_app(
+    settings: Settings | None = None,
+    gpu_queue: GpuWorkQueue | None = None,
+    ollama_client: AsyncOllamaClient | None = None,
+    service_probe: Callable[[str], Awaitable[bool]] | None = None,
+) -> FastAPI:
     settings = settings or Settings.from_env()
     store = RunStore(settings.data_dir)
-    app = FastAPI(title="AI Meet in Multi-Language", version="0.1.0")
+    gpu_queue = gpu_queue or GpuWorkQueue(
+        settings.ollama_url,
+        settings.speaches_url,
+        settings.ollama_model,
+        PROFILES["breeze"].model,
+    )
+    ollama_client = ollama_client or AsyncOllamaClient(settings.ollama_url)
+    service_probe = service_probe or _probe_url
+
+    @asynccontextmanager
+    async def lifespan(_: FastAPI):
+        yield
+        close = getattr(ollama_client, "aclose", None)
+        if close is not None:
+            await close()
+
+    app = FastAPI(
+        title="AI Meet in Multi-Language", version="0.1.0", lifespan=lifespan
+    )
+    app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
     @app.get("/", include_in_schema=False)
     async def index() -> HTMLResponse:
-        return HTMLResponse(INDEX_HTML)
-
-    @app.get("/static/{filename}", include_in_schema=False)
-    async def static_asset(filename: str) -> Response:
-        asset = STATIC_ASSETS.get(filename)
-        if asset is None:
-            raise HTTPException(status_code=404, detail="找不到這個靜態資源")
-        media_type, content = asset
-        return Response(content=content, media_type=media_type)
+        html_content = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+        return HTMLResponse(html_content)
 
     @app.get("/api/health")
     async def health() -> dict[str, object]:
+        speaches_health_url = settings.speaches_url.removesuffix("/v1") + "/health"
+        ollama_health_url = settings.ollama_url.rstrip("/") + "/api/version"
+        speaches_available, ollama_available = await asyncio.gather(
+            service_probe(speaches_health_url), service_probe(ollama_health_url)
+        )
+        q_status = gpu_queue.status
         return {
             "status": "ok",
             "openai_configured": bool(settings.openai_api_key),
+            "speaches_configured": bool(settings.speaches_url),
+            "ollama_configured": bool(settings.ollama_url),
+            "speaches_available": speaches_available,
+            "ollama_available": ollama_available,
             "max_upload_bytes": settings.max_upload_bytes,
+            "ollama_default_model": settings.ollama_model,
+            "gpu_queue": {
+                "is_busy": q_status.is_busy,
+                "active_task": q_status.active_task,
+                "active_category": q_status.active_category,
+                "queue_length": q_status.queue_length,
+                "completed_tasks": q_status.completed_tasks,
+            },
         }
 
     @app.get("/api/runs", response_model=list[EvaluationRun])
@@ -60,15 +107,27 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except RunNotFoundError as error:
             raise HTTPException(status_code=404, detail="找不到這筆轉錄工作") from error
 
+    @app.get("/api/runs/{run_id}/revisions", response_model=list[TranscriptResult])
+    async def get_run_revisions(run_id: str) -> list[TranscriptResult]:
+        try:
+            run = store.get(run_id)
+            return run.revisions
+        except RunNotFoundError as error:
+            raise HTTPException(status_code=404, detail="找不到這筆轉錄工作") from error
+
     @app.post("/api/runs", response_model=EvaluationRun, status_code=202)
     async def create_run(
         background_tasks: BackgroundTasks,
         audio: UploadFile = File(...),
         engine: Engine = Form(Engine.DIARIZE),
         keywords: str = Form(""),
+        auto_summary: bool = Form(False),
+        summary_model: str = Form(""),
     ) -> EvaluationRun:
-        if not settings.openai_api_key:
-            raise HTTPException(status_code=503, detail="伺服器尚未設定 OPENAI_API_KEY")
+        if engine in (Engine.TRANSCRIBE, Engine.DIARIZE) and not settings.openai_api_key:
+            raise HTTPException(
+                status_code=503, detail="此轉錄方式需要伺服器環境設定 OPENAI_API_KEY"
+            )
 
         original_filename = Path(audio.filename or "audio").name
         extension = Path(original_filename).suffix.lower()
@@ -84,7 +143,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 while chunk := await audio.read(1024 * 1024):
                     written += len(chunk)
                     if written > settings.max_upload_bytes:
-                        raise HTTPException(status_code=413, detail="音訊超過目前 25 MB 原型限制")
+                        raise HTTPException(
+                            status_code=413, detail="音訊超過目前 25 MB 原型限制"
+                        )
                     output.write(chunk)
         except Exception:
             destination.unlink(missing_ok=True)
@@ -112,11 +173,86 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 engine=engine,
                 status=RunStatus.QUEUED,
                 keywords=parsed_keywords,
+                auto_summary=auto_summary,
+                summary_model=summary_model or settings.ollama_model,
             )
         )
-        transcriber = AsyncOpenAITranscriber(settings.openai_api_key)
-        background_tasks.add_task(process_run_async, run_id, store, transcriber)
+
+        if engine == Engine.BREEZE:
+            transcriber = AsyncSpeachesTranscriber(
+                settings.speaches_url, PROFILES["breeze"]
+            )
+        else:
+            transcriber = AsyncOpenAITranscriber(settings.openai_api_key or "")
+
+        background_tasks.add_task(
+            process_run_async,
+            run_id,
+            store,
+            transcriber,
+            gpu_queue=gpu_queue,
+            ollama_client=ollama_client,
+        )
         return run
+
+    @app.post("/api/runs/{run_id}/summary", response_model=EvaluationRun, status_code=202)
+    async def request_summary(
+        run_id: str,
+        background_tasks: BackgroundTasks,
+        model: str = Form(""),
+        source_revision_id: str | None = Form(None),
+    ) -> EvaluationRun:
+        try:
+            run = store.get(run_id)
+        except RunNotFoundError as error:
+            raise HTTPException(status_code=404, detail="找不到這筆轉錄工作") from error
+
+        if not (run.result or run.raw_asr):
+            raise HTTPException(
+                status_code=400, detail="工作尚未完成轉錄，無法產生摘要"
+            )
+
+        if run.status in (RunStatus.TRANSCRIBING, RunStatus.SUMMARIZING):
+            raise HTTPException(
+                status_code=409, detail="工作正在處理中，請稍候再產生摘要"
+            )
+
+        effective_model = model or run.summary_model or settings.ollama_model
+        if source_revision_id and not any(
+            revision.revision_id == source_revision_id for revision in run.revisions
+        ):
+            raise HTTPException(status_code=404, detail="找不到指定的逐字稿版本")
+        store.update(
+            run_id,
+            status=RunStatus.SUMMARIZING,
+            summary_model=effective_model,
+            error=None,
+        )
+        background_tasks.add_task(
+            summarize_run_async,
+            run_id,
+            store,
+            ollama_client,
+            gpu_queue=gpu_queue,
+            model=effective_model,
+            source_revision_id=source_revision_id,
+        )
+        return store.get(run_id)
+
+    @app.post("/api/runs/{run_id}/revisions/correct", response_model=EvaluationRun)
+    async def correct_revision(
+        run_id: str,
+        corrected_text: str = Form(...),
+        source_revision_id: str | None = Form(None),
+    ) -> EvaluationRun:
+        try:
+            return add_corrected_revision(
+                run_id, store, corrected_text, source_revision_id=source_revision_id
+            )
+        except RunNotFoundError as error:
+            raise HTTPException(status_code=404, detail="找不到這筆轉錄工作") from error
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
 
     return app
 

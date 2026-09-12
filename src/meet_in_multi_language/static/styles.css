@@ -7,26 +7,101 @@
 
 * { box-sizing: border-box; }
 body { margin: 0; }
-main { width: min(920px, calc(100% - 32px)); margin: 48px auto; }
-header { margin-bottom: 32px; }
-h1 { margin: 4px 0 8px; font-size: clamp(2rem, 6vw, 3.6rem); line-height: 1.05; }
-h2 { margin: 0 0 16px; }
-.eyebrow { color: #1d6d46; font-weight: 750; letter-spacing: .08em; }
+main { width: min(1040px, calc(100% - 32px)); margin: 40px auto; }
+header { margin-bottom: 28px; }
+h1 { margin: 4px 0 8px; font-size: clamp(1.8rem, 5vw, 3rem); line-height: 1.1; color: #0d3b24; }
+h2 { margin: 0 0 16px; font-size: 1.4rem; color: #17211b; }
+h3 { margin: 0 0 8px; font-size: 1.15rem; }
+h4 { margin: 12px 0 6px; font-size: 1rem; color: #234d35; }
+p { margin: 0 0 10px; line-height: 1.5; }
+.eyebrow { color: #1d6d46; font-weight: 750; letter-spacing: .08em; text-transform: uppercase; font-size: 0.85rem; margin-bottom: 4px; }
+.hint { color: #5a6b61; font-size: 0.85rem; }
+
 .panel { margin: 20px 0; padding: 24px; border: 1px solid #d5ddd7; border-radius: 16px; background: #fff; box-shadow: 0 12px 30px rgba(35, 52, 42, .06); }
+
+/* 系統狀態與 GPU 儀表板 */
+.system-dashboard { background: #fbfdfb; border-color: #c9d8ce; }
+.system-status-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
+.system-status-header h2 { margin: 0; }
+.status-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin-bottom: 16px; }
+.status-item { padding: 10px 14px; background: #fff; border: 1px solid #dbe3dc; border-radius: 8px; display: flex; flex-direction: column; gap: 4px; }
+.status-item .label { font-size: 0.8rem; color: #5a6b61; }
+.status-item .value { font-size: 0.95rem; font-weight: 600; color: #17211b; }
+.badge { display: inline-block; padding: 4px 10px; border-radius: 999px; font-size: 0.8rem; font-weight: 600; }
+.badge.idle { background: #e3f5e9; color: #166b37; }
+.badge.busy { background: #fff4e0; color: #a35b00; }
+.badge.error { background: #ffe9e7; color: #9c2117; }
+
+/* 表單與控制項 */
 form, label { display: grid; gap: 8px; }
 form { gap: 18px; }
 input, select, textarea, button { font: inherit; }
-input, select, textarea { width: 100%; padding: 11px 12px; border: 1px solid #aebbb2; border-radius: 8px; background: #fff; }
-button { padding: 11px 16px; border: 0; border-radius: 8px; background: #176b43; color: #fff; font-weight: 700; cursor: pointer; }
+input[type="text"], input[type="file"], select, textarea { width: 100%; padding: 10px 12px; border: 1px solid #aebbb2; border-radius: 8px; background: #fff; }
+textarea { resize: vertical; }
+button { padding: 10px 16px; border: 0; border-radius: 8px; background: #176b43; color: #fff; font-weight: 700; cursor: pointer; transition: background .15s; }
+button:hover:not(:disabled) { background: #115333; }
 button:disabled { cursor: not-allowed; opacity: .5; }
 button.secondary { border: 1px solid #aebbb2; background: #fff; color: #17211b; }
-.status { padding: 10px 12px; border-radius: 8px; background: #edf5ef; }
-.status.error, .error { color: #8a241e; background: #fff0ee; }
-.section-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.run-list { display: grid; gap: 12px; }
-.run-card { padding: 16px; border: 1px solid #dbe2dc; border-radius: 10px; }
-.run-card h3 { margin: 0 0 6px; overflow-wrap: anywhere; }
-.meta { color: #536159; font-size: .9rem; }
-pre { max-height: 320px; overflow: auto; padding: 12px; white-space: pre-wrap; background: #f6f8f6; border-radius: 8px; }
-@media (max-width: 560px) { main { margin: 24px auto; } .panel { padding: 18px; } }
+button.secondary:hover:not(:disabled) { background: #f0f4f1; }
+button.small { padding: 6px 12px; font-size: 0.85rem; font-weight: 600; }
 
+.checkbox-label { display: flex; align-items: center; gap: 8px; font-size: 0.95rem; cursor: pointer; }
+.checkbox-label input[type="checkbox"] { width: auto; }
+.summary-options-panel { background: #f4f8f5; border: 1px dashed #b8cebf; padding: 14px 16px; border-radius: 8px; display: grid; gap: 10px; }
+
+.status { padding: 10px 14px; border-radius: 8px; background: #edf5ef; font-size: 0.95rem; }
+.status.error, .error { color: #8a241e; background: #fff0ee; }
+
+.section-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.run-list { display: grid; gap: 20px; }
+
+/* 工作卡片 */
+.run-card { padding: 20px; border: 1px solid #dbe2dc; border-radius: 12px; background: #fff; box-shadow: 0 4px 12px rgba(0,0,0,0.03); }
+.card-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 12px; border-bottom: 1px solid #edf1ee; padding-bottom: 10px; }
+.card-title { font-size: 1.25rem; margin: 0 0 4px; overflow-wrap: anywhere; }
+.status-pill { display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 0.8rem; font-weight: 700; }
+.status-pill.completed { background: #e2f5e8; color: #186b3a; }
+.status-pill.transcribing { background: #e0efff; color: #12579b; }
+.status-pill.summarizing { background: #fbf0d8; color: #9c6307; }
+.status-pill.queued { background: #f0f2f0; color: #4d5750; }
+.status-pill.failed { background: #fde8e6; color: #a81c15; }
+
+/* 版本切換列 */
+.revision-toolbar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; background: #f7f9f7; padding: 8px 12px; border-radius: 8px; margin: 12px 0; border: 1px solid #e1e7e2; }
+.revision-selector-group { display: flex; align-items: center; gap: 8px; font-size: 0.9rem; }
+.revision-selector-group select { width: auto; padding: 5px 10px; font-size: 0.85rem; }
+.raw-badge { font-size: 0.75rem; background: #e9f0ea; color: #2d5a3b; padding: 2px 6px; border-radius: 4px; font-weight: 600; }
+.revision-actions { display: flex; gap: 8px; }
+
+/* 逐字稿區塊 */
+.transcript-box { max-height: 400px; overflow-y: auto; padding: 14px; background: #fbfdfb; border: 1px solid #e1e8e2; border-radius: 8px; font-family: inherit; font-size: 0.95rem; line-height: 1.6; }
+.segment-row { padding: 6px 8px; border-radius: 6px; margin-bottom: 6px; transition: background .2s; }
+.segment-row:hover { background: #f0f6f2; }
+.segment-row.highlighted { background: #fff5cb; border-left: 3px solid #df9c00; }
+.segment-meta { display: inline-flex; align-items: center; gap: 6px; margin-right: 8px; font-size: 0.8rem; font-family: monospace; color: #5a6b61; }
+.segment-tag { background: #eef3ef; padding: 1px 5px; border-radius: 4px; color: #325e40; font-weight: 600; }
+.segment-speaker { color: #17428f; font-weight: 600; }
+.segment-text { color: #17211b; }
+.quality-flag { display: inline-block; margin-left: 6px; padding: 1px 6px; border-radius: 4px; font-size: 0.7rem; background: #ffe9d9; color: #a84700; }
+
+/* 摘要展示面板 */
+.summary-container { margin-top: 18px; padding: 16px; border: 1px solid #cde0d3; border-radius: 10px; background: #f9fbf9; }
+.summary-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; border-bottom: 1px solid #dce8df; padding-bottom: 8px; }
+.summary-header h4 { margin: 0; font-size: 1.1rem; color: #124d2e; }
+.summary-section { margin-bottom: 14px; }
+.summary-section h5 { margin: 0 0 6px; font-size: 0.95rem; color: #235c3b; font-weight: 700; }
+.summary-overview { font-size: 0.95rem; color: #243329; line-height: 1.6; margin-bottom: 12px; padding: 8px 12px; background: #fff; border-radius: 6px; border: 1px solid #e3ebe5; }
+.summary-list { list-style: disc; margin: 0; padding-left: 20px; font-size: 0.9rem; }
+.summary-list li { margin-bottom: 6px; line-height: 1.5; }
+.evidence-link { display: inline-block; margin-left: 4px; padding: 1px 5px; border-radius: 4px; font-size: 0.75rem; background: #e2efff; color: #12579b; cursor: pointer; text-decoration: none; border: 1px solid #c2dbf7; font-family: monospace; }
+.evidence-link:hover { background: #bad7f7; }
+
+/* 模態框 / 校訂面板 */
+.correct-modal { margin-top: 10px; padding: 12px; background: #fdfdfd; border: 1px solid #d3dcd5; border-radius: 8px; display: grid; gap: 8px; }
+
+@media (max-width: 640px) {
+  main { margin: 16px auto; }
+  .panel { padding: 16px; }
+  .card-header { flex-direction: column; }
+  .revision-toolbar { flex-direction: column; align-items: flex-start; }
+}

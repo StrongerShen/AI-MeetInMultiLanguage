@@ -7,7 +7,7 @@ from typing import Any
 
 import httpx
 
-from .models import TranscriptResult, TranscriptSegment
+from .models import TranscriptResult, TranscriptRevisionKind, TranscriptSegment
 
 
 MIXED_LANGUAGE_PROMPT = (
@@ -205,7 +205,78 @@ class SpeachesTranscriber:
         return TranscriptResult(
             provider="speaches",
             model=self.profile.model,
+            revision_kind=TranscriptRevisionKind.RAW_ASR,
+            source_revision_id=None,
             text=text,
             detected_languages=[language] if language else [],
             segments=segments,
         )
+
+
+class AsyncSpeachesTranscriber:
+    """非同步呼叫 OpenAI 相容的 Speaches/faster-whisper 轉錄服務。"""
+
+    def __init__(
+        self,
+        base_url: str,
+        profile: SpeachesProfile,
+        *,
+        vad_filter: bool | None = None,
+        prompt: str | None = None,
+        timeout_seconds: float = 1800,
+        client: httpx.AsyncClient | None = None,
+    ) -> None:
+        self.profile = profile
+        self.vad_filter = profile.vad_filter if vad_filter is None else vad_filter
+        self.prompt = profile.prompt if prompt is None else prompt
+        self._owns_client = client is None
+        self._client = client or httpx.AsyncClient(
+            base_url=base_url.rstrip("/"), timeout=timeout_seconds
+        )
+
+    async def transcribe(
+        self, audio_path: Path, engine: object, keywords: list[str]
+    ) -> TranscriptResult:
+        data: dict[str, str | list[str]] = {
+            "model": self.profile.model,
+            "response_format": "verbose_json",
+            "temperature": "0",
+            "vad_filter": str(self.vad_filter).lower(),
+        }
+        if self.prompt:
+            data["prompt"] = self.prompt
+        if self.profile.language:
+            data["language"] = self.profile.language
+        if keywords:
+            data["hotwords"] = ", ".join(keywords)
+        if self.profile.word_timestamps:
+            data["timestamp_granularities"] = ["segment", "word"]
+
+        with audio_path.open("rb") as audio_file:
+            content = audio_file.read()
+
+        response = await self._client.post(
+            "/audio/transcriptions",
+            data=data,
+            files={"file": (audio_path.name, content, "application/octet-stream")},
+        )
+        response.raise_for_status()
+        payload = response.json()
+        segments = _segments_from_response(payload, self.profile.word_timestamps)
+        text = str(payload.get("text", "")).strip()
+        if not text:
+            text = "\n".join(segment.text for segment in segments)
+        language = str(payload.get("language", "")).strip()
+        return TranscriptResult(
+            provider="speaches",
+            model=self.profile.model,
+            revision_kind=TranscriptRevisionKind.RAW_ASR,
+            source_revision_id=None,
+            text=text,
+            detected_languages=[language] if language else [],
+            segments=segments,
+        )
+
+    async def aclose(self) -> None:
+        if self._owns_client:
+            await self._client.aclose()
