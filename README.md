@@ -2,7 +2,30 @@
 
 將含中文（暫指華語）、英語、日語、臺語的會議錄音，轉成可校訂、可回聽的逐字稿，以及可追溯來源的會議摘要與分析。
 
-狀態：第一版規劃草案，尚未實作或完成模型品質驗證。更新日期：2026-09-12。
+狀態：P1 品質原型開發中，尚未完成模型品質驗證。更新日期：2026-09-12。
+
+## 目前進度：P1 品質原型
+
+已建立第一個可執行骨架：FastAPI Web 頁面可上傳短音檔並呼叫候選轉錄模型，轉錄工作與標準化結果保存在本機 `var/`；命令列工具可將長錄音轉為 16 kHz 單聲道、切成有原檔時間偏移的片段，並計算 CER／WER。這是評測工具，尚未包含摘要、完整長音檔自動合併或正式使用者系統。
+
+需求：Python 3.12、[uv](https://docs.astral.sh/uv/)、FFmpeg，以及可用的 `OPENAI_API_KEY`。金鑰只設定於伺服器環境，不放入瀏覽器或 Git。
+
+```bash
+uv sync
+export OPENAI_API_KEY='你的 API 金鑰'
+uv run uvicorn meet_in_multi_language.api:app --reload
+```
+
+開啟 `http://127.0.0.1:8000`。目前依 Transcriptions API 的直接上傳限制，Web 原型接受最大 25 MB；完整會議先用下列指令切段：
+
+```bash
+uv run meet-eval prepare /path/to/meeting.mp3 ./var/eval/meeting
+uv run meet-eval transcribe ./var/eval/meeting/manifest.json ./var/results \
+  --engine gpt-4o-transcribe-diarize
+uv run meet-eval score reference.txt hypothesis.txt --unit character
+```
+
+整批轉錄每完成一段就寫入 `parts/`；中途失敗後重跑會沿用已完成片段，加入 `--force` 才全部重做。合併結果的時間會換算回原始會議時間軸。評測資料、錄音、金鑰及執行結果都在 `.gitignore` 排除範圍內。
 
 ## 1. 需求與暫定範圍
 

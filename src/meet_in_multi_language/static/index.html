@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="zh-Hant-TW">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>多語會議逐字稿品質原型</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <main>
+      <header>
+        <p class="eyebrow">品質原型 P1</p>
+        <h1>多語會議逐字稿</h1>
+        <p>上傳中、英、日、臺語混合的短錄音，比較轉錄結果並建立正式驗收資料。</p>
+      </header>
+
+      <section class="panel">
+        <h2>建立轉錄工作</h2>
+        <p id="service-status" class="status">正在檢查服務設定…</p>
+        <form id="upload-form">
+          <label>
+            音訊檔案
+            <input name="audio" type="file" accept="audio/*,.mp4,.webm" required />
+          </label>
+          <label>
+            轉錄方式
+            <select name="engine">
+              <option value="gpt-4o-transcribe-diarize">含講者與段落時間</option>
+              <option value="gpt-transcribe">混語與詞彙提示</option>
+            </select>
+          </label>
+          <label>
+            專有名詞（每行一個；含講者模式不使用）
+            <textarea name="keywords" rows="4" placeholder="產品名稱&#10;人名&#10;專案代號"></textarea>
+          </label>
+          <button type="submit">上傳並開始轉錄</button>
+        </form>
+        <p id="form-message" role="status"></p>
+      </section>
+
+      <section class="panel">
+        <div class="section-heading">
+          <h2>最近工作</h2>
+          <button id="refresh-button" class="secondary" type="button">重新整理</button>
+        </div>
+        <div id="run-list" class="run-list" aria-live="polite"></div>
+      </section>
+    </main>
+    <script src="/static/app.js" defer></script>
+  </body>
+</html>
+
