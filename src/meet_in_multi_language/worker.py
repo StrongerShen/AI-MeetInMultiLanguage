@@ -338,3 +338,67 @@ def rename_speaker_revision(
         segments=new_segments,
     )
     return store.append_revision(run_id, new_rev)
+
+
+def update_segment_revision(
+    run_id: str,
+    store: RunStore,
+    segment_id: str,
+    corrected_text: str,
+    speaker: str | None = None,
+    source_revision_id: str | None = None,
+) -> EvaluationRun:
+    """單一段落快速校訂，保留其餘段落之時間軸與講者，並另存為 human_edited 新版本。"""
+    run = store.get(run_id)
+    if not run.raw_asr:
+        raise ValueError("此工作尚未有原始 ASR 逐字稿")
+    corrected_text = corrected_text.strip()
+    if not corrected_text:
+        raise ValueError("校訂文字不可為空")
+
+    source = run.result or run.raw_asr
+    if source_revision_id:
+        source = next(
+            (rev for rev in run.revisions if rev.revision_id == source_revision_id),
+            None,
+        )
+        if source is None:
+            raise ValueError(f"找不到來源逐字稿版本 {source_revision_id}")
+
+    target_idx = next(
+        (i for i, s in enumerate(source.segments) if s.segment_id == segment_id),
+        None,
+    )
+    if target_idx is None:
+        raise ValueError(f"找不到欲校訂的段落：{segment_id}")
+
+    new_segments: list[TranscriptSegment] = []
+    for i, seg in enumerate(source.segments):
+        if i == target_idx:
+            updated_speaker = (
+                speaker.strip()
+                if speaker is not None and speaker.strip()
+                else seg.speaker
+            )
+            new_segments.append(
+                seg.model_copy(
+                    update={
+                        "text": corrected_text,
+                        "speaker": updated_speaker,
+                    }
+                )
+            )
+        else:
+            new_segments.append(seg.model_copy())
+
+    new_text = "\n".join(s.text for s in new_segments if s.text)
+    corrected_rev = TranscriptResult(
+        provider="user",
+        model="manual-edit",
+        revision_kind=TranscriptRevisionKind.HUMAN_EDITED,
+        source_revision_id=source.revision_id,
+        text=new_text,
+        detected_languages=source.detected_languages,
+        segments=new_segments,
+    )
+    return store.append_revision(run_id, corrected_rev)

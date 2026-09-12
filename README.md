@@ -2,7 +2,7 @@
 
 將含中文（暫指華語）、英語、日語、臺語的會議錄音，轉成可校訂、可回聽的逐字稿，以及可追溯來源的會議摘要與分析。
 
-狀態：P1 品質原型完成；P2 處理核心、P3 檢閱介面與 P4 交付成果（系統診斷工具 meet-eval doctor、調校指南 docs/tuning.md、82 分鐘長會議實機端到端批次壓測）實作完成，68 項自動化測試全數通過。更新日期：2026-09-13。
+狀態：P1 品質原型完成；P2 處理核心、P3 檢閱介面與 P4 交付成果（系統診斷工具 meet-eval doctor、調校指南 docs/tuning.md、82 分鐘長會議實機端到端批次壓測、單段快速校訂與草稿帶入）實作完成，69 項自動化測試全數通過。更新日期：2026-09-13。
 
 
 目前實測主機基線：Ubuntu、46.9 GiB RAM、NVIDIA GeForce RTX 3050 8 GiB。其他專案文件中的 16 GB 紀錄已過期，不可沿用為本專案的資源判斷依據。
@@ -394,6 +394,7 @@ LLM 的臺語同音字校正只能產生「校正版」，不得覆蓋 ASR 原�
 - 音訊回聽與同步播放：實作 `GET /api/runs/{id}/audio` 串流端點，前端內嵌音訊播放器；逐字稿段落時間戳點擊跳轉播放；播放時即時高亮發音段落；輪詢重繪時自動保存並恢復播放進度，音訊不中斷。
 - 段落序號與摘要引用跳轉：逐字稿顯示直觀順序標籤（`#1` ~ `#168`）；摘要中點擊 `evidence_ids`（如 `seg-085`）支援跨切段智慧定位、平滑滾動置中並同步定位播放器時間。
 - 82.6 分鐘真實長會議匯入與檢閱：完成全場 168 個段落、19,514 字元與 118.9 MB 音訊之 Web 介面整合，支援 HTTP 206 Range 隨選拖曳定位與多格式匯出。
+- 單段快速校訂與草稿帶入：實作 `POST /api/runs/{id}/segments/{seg_id}/correct` 與前端行內快速編輯；保留全篇其餘段落時間戳與結構並另存為 `human_edited` 新版本（raw_asr 不可變）；段落支援單鍵帶入全篇校訂草稿，行內編輯具備輪詢防失焦保護。
 - 講者更名與不可變性：實作 `POST /api/runs/{id}/speakers/rename`，支援批次將講者標籤更名，並另存為 `human_edited` 新版本，原始 `raw_asr` 絕對不可變。
 - 多格式匯出：實作 `GET /api/runs/{id}/export`，支援純文字（TXT）、字幕檔（SRT）、網頁字幕（VTT）、會議總結報告（Markdown）及結構化資料（JSON），支援指定逐字稿版本。
 - 工作清理與刪除：實作 `DELETE /api/runs/{id}` 與前端刪除確認按鈕，安全清理紀錄與磁碟音訊。
@@ -401,7 +402,7 @@ LLM 的臺語同音字校正只能產生「校正版」，不得覆蓋 ASR 原�
 - 端到端批次處理 CLI：實作 `meet-eval pipeline` 與 Python 模組 `run_pipeline`，一鍵完成長音訊切段、斷點續跑轉錄、Ollama 摘要與 5 種格式匯出；支援 `num_ctx: 24576` 容納完整長逐字稿。
 - 系統相依性檢查工具：實作 `meet-eval doctor`，一鍵自動探測作業系統、RAM、RTX 3050 顯存狀態、ffmpeg 工具鏈、Speaches/Breeze 與 Ollama 模型就緒度。
 - 健康端點會實際探測 Speaches 與 Ollama；API 摘要端點加入 409 處理中防重；非同步 HTTP client 與轉錄器已加入關閉處理。
-- 指定測試指令目前為 **68 項全數通過**，Python `compileall`、JavaScript `node --check` 與 `git diff --check` 皆通過。
+- 指定測試指令目前為 **69 項全數通過**，Python `compileall`、JavaScript `node --check` 與 `git diff --check` 皆通過。
 
 接手後優先事項：
 

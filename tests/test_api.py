@@ -521,3 +521,81 @@ def test_delete_run_endpoint(tmp_path: Path) -> None:
     assert resp_del.status_code == 204
     assert not audio_file.exists()
     assert resp_missing.status_code == 404
+
+
+def test_correct_segment_endpoint(tmp_path: Path) -> None:
+    from meet_in_multi_language import api
+    from meet_in_multi_language.models import EvaluationRun, RunStatus, TranscriptResult, TranscriptSegment
+
+    app = api.create_app(Settings(tmp_path, 1024 * 1024, "test-key"))
+    store = api.RunStore(tmp_path)
+
+    rev = TranscriptResult(
+        provider="test",
+        model="breeze",
+        text="第一段原始文字。\n第二段原始文字。",
+        segments=[
+            TranscriptSegment(
+                segment_id="chunk-001-seg-1",
+                start_ms=0,
+                end_ms=5000,
+                speaker="SPEAKER_00",
+                text="第一段原始文字。",
+            ),
+            TranscriptSegment(
+                segment_id="chunk-001-seg-2",
+                start_ms=5000,
+                end_ms=10000,
+                speaker="SPEAKER_01",
+                text="第二段原始文字。",
+            ),
+        ],
+    )
+    store.save(
+        EvaluationRun(
+            run_id="run-seg-correct-test",
+            original_filename="sample.mp3",
+            stored_filename="sample.mp3",
+            engine=Engine.BREEZE,
+            status=RunStatus.COMPLETED,
+            raw_asr=rev,
+            revisions=[rev],
+            result=rev,
+        )
+    )
+
+    async def exercise_api() -> tuple[httpx.Response, httpx.Response]:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            resp_ok = await client.post(
+                "/api/runs/run-seg-correct-test/segments/chunk-001-seg-1/correct",
+                data={"corrected_text": "第一段校訂後的文字。", "speaker": "沈志中"},
+            )
+            resp_bad = await client.post(
+                "/api/runs/run-seg-correct-test/segments/non-existent-seg/correct",
+                data={"corrected_text": "文字"},
+            )
+            return resp_ok, resp_bad
+
+    resp_ok, resp_bad = asyncio.run(exercise_api())
+    assert resp_ok.status_code == 200
+    data = resp_ok.json()
+    assert len(data["revisions"]) == 2
+    # raw_asr 絕對不變
+    assert data["raw_asr"]["segments"][0]["text"] == "第一段原始文字。"
+    assert data["raw_asr"]["segments"][0]["speaker"] == "SPEAKER_00"
+    # 新版校訂生效
+    new_rev = data["result"]
+    assert new_rev["revision_kind"] == "human_edited"
+    assert new_rev["segments"][0]["text"] == "第一段校訂後的文字。"
+    assert new_rev["segments"][0]["speaker"] == "沈志中"
+    assert new_rev["segments"][0]["start_ms"] == 0
+    assert new_rev["segments"][0]["end_ms"] == 5000
+    # 第二段完全保留
+    assert new_rev["segments"][1]["text"] == "第二段原始文字。"
+    assert new_rev["segments"][1]["speaker"] == "SPEAKER_01"
+    assert new_rev["segments"][1]["start_ms"] == 5000
+    assert new_rev["segments"][1]["end_ms"] == 10000
+
+    # 不存在的 segment_id 回傳 400
+    assert resp_bad.status_code == 400

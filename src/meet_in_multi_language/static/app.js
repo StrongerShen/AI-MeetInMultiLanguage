@@ -104,6 +104,8 @@ function validateEngineOption() {
 
 engineSelect.addEventListener("change", validateEngineOption);
 
+const openSegmentEdits = {};
+
 function renderSegments(segments, runId) {
   if (!segments || !segments.length) return "<p>（無段落資訊）</p>";
   return segments.map((seg, index) => {
@@ -122,6 +124,24 @@ function renderSegments(segments, runId) {
     const startMs = seg.start_ms != null ? seg.start_ms : "";
     const endMs = seg.end_ms != null ? seg.end_ms : (seg.start_ms != null ? seg.start_ms + 4000 : "");
     const segLabel = seg.segment_id.startsWith("chunk-") ? `#${seqNum}` : escapeHtml(seg.segment_id);
+
+    const editKey = `${runId}:${seg.segment_id}`;
+    const editState = openSegmentEdits[editKey];
+    const isEditing = !!editState;
+
+    const inlineEditHtml = isEditing ? `
+      <div class="segment-inline-edit" id="inline-edit-${escapeHtml(runId)}-${escapeHtml(seg.segment_id)}">
+        <label class="hint"><strong>快速校訂段落 #${seqNum}（另存新版本，保留原始 raw_asr）：</strong></label>
+        <textarea id="inline-text-${escapeHtml(runId)}-${escapeHtml(seg.segment_id)}" rows="2" placeholder="輸入校訂後的段落文字...">${escapeHtml(editState.text)}</textarea>
+        <div class="inline-edit-controls">
+          <label class="hint">講者：</label>
+          <input type="text" id="inline-spk-${escapeHtml(runId)}-${escapeHtml(seg.segment_id)}" value="${escapeHtml(editState.speaker)}" placeholder="講者名稱" />
+          <button type="button" class="small" id="submit-inline-${escapeHtml(runId)}-${escapeHtml(seg.segment_id)}" onclick="submitSegmentEdit('${escapeHtml(runId)}', '${escapeHtml(seg.segment_id)}')">儲存校訂</button>
+          <button type="button" class="small secondary" onclick="toggleSegmentEdit('${escapeHtml(runId)}', '${escapeHtml(seg.segment_id)}')">取消</button>
+        </div>
+      </div>
+    ` : "";
+
     return `
       <div class="segment-row" id="seg-row-${escapeHtml(seg.segment_id)}" data-seg-id="${escapeHtml(seg.segment_id)}" data-seq-index="${seqNum}" data-start-ms="${startMs}" data-end-ms="${endMs}">
         <span class="segment-meta">
@@ -131,6 +151,11 @@ function renderSegments(segments, runId) {
         </span>
         <span class="segment-text">${escapeHtml(seg.text)}</span>
         ${flagsHtml}
+        <span class="segment-actions">
+          <button type="button" class="segment-action-btn" title="快速校訂此段文字" onclick="toggleSegmentEdit('${escapeHtml(runId)}', '${escapeHtml(seg.segment_id)}')">✏️ 校訂</button>
+          <button type="button" class="segment-action-btn" title="帶入此段文字至全篇校訂草稿" onclick="copySegmentToDraft('${escapeHtml(runId)}', '${escapeHtml(seg.text)}')">📋 帶入草稿</button>
+        </span>
+        ${inlineEditHtml}
       </div>
     `;
   }).join("");
@@ -444,6 +469,77 @@ window.onFilterInput = function(runId) {
   });
 };
 
+window.copySegmentToDraft = function(runId, text) {
+  openCorrectionPanels.add(runId);
+  const panel = document.getElementById(`correction-panel-${runId}`);
+  const textarea = document.getElementById(`correction-text-${runId}`);
+  if (panel) panel.style.display = "grid";
+  if (textarea) {
+    const current = textarea.value.trim();
+    textarea.value = current ? `${current}\n${text}` : text;
+    correctionDrafts[runId] = textarea.value;
+    textarea.focus();
+    textarea.scrollTop = textarea.scrollHeight;
+  }
+};
+
+window.toggleSegmentEdit = function(runId, segId) {
+  const key = `${runId}:${segId}`;
+  if (openSegmentEdits[key]) {
+    delete openSegmentEdits[key];
+  } else {
+    const card = document.getElementById(`run-card-${runId}`);
+    const row = card ? card.querySelector(`.segment-row[data-seg-id="${segId}"]`) : null;
+    const textNode = row ? row.querySelector(".segment-text") : null;
+    const spkNode = row ? row.querySelector(".speaker-tag") : null;
+    const text = textNode ? textNode.textContent.trim() : "";
+    const spk = spkNode ? spkNode.textContent.replace(/[\[\]]/g, "").trim() : "";
+    openSegmentEdits[key] = { text, speaker: spk };
+  }
+  loadRuns();
+};
+
+window.submitSegmentEdit = async function(runId, segId) {
+  const textInput = document.getElementById(`inline-text-${runId}-${segId}`);
+  const spkInput = document.getElementById(`inline-spk-${runId}-${segId}`);
+  const submitBtn = document.getElementById(`submit-inline-${runId}-${segId}`);
+  const text = textInput ? textInput.value.trim() : "";
+  const speaker = spkInput ? spkInput.value.trim() : "";
+  if (!text) {
+    alert("校訂文字不可為空");
+    return;
+  }
+  if (submitBtn) submitBtn.disabled = true;
+
+  const currentRevId = selectedRevisionPerRun[runId];
+  const formData = new URLSearchParams();
+  formData.append("corrected_text", text);
+  if (speaker) formData.append("speaker", speaker);
+  if (currentRevId) formData.append("source_revision_id", currentRevId);
+
+  try {
+    const response = await fetch(`/api/runs/${runId}/segments/${encodeURIComponent(segId)}/correct`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: formData.toString(),
+    });
+    if (!response.ok) {
+      alert(`校訂失敗：${await readError(response)}`);
+      if (submitBtn) submitBtn.disabled = false;
+      return;
+    }
+    const updatedRun = await response.json();
+    delete openSegmentEdits[`${runId}:${segId}`];
+    if (updatedRun.result && updatedRun.result.revision_id) {
+      selectedRevisionPerRun[runId] = updatedRun.result.revision_id;
+    }
+    await loadRuns();
+  } catch (err) {
+    alert(`連線失敗：${err.message}`);
+    if (submitBtn) submitBtn.disabled = false;
+  }
+};
+
 window.switchRevision = function(runId, revisionId) {
   selectedRevisionPerRun[runId] = revisionId;
   delete correctionDrafts[runId];
@@ -461,7 +557,8 @@ async function loadRuns() {
     (
       document.activeElement.id.startsWith("correction-text-") ||
       document.activeElement.id.startsWith("rename-") ||
-      document.activeElement.id.startsWith("search-input-")
+      document.activeElement.id.startsWith("search-input-") ||
+      document.activeElement.id.startsWith("inline-")
     )
   ) {
     activeInputId = document.activeElement.id;

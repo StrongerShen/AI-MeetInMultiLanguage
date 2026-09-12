@@ -35,6 +35,7 @@ from .worker import (
     process_run_async,
     rename_speaker_revision,
     summarize_run_async,
+    update_segment_revision,
 )
 
 
@@ -264,6 +265,28 @@ def create_app(
         try:
             return add_corrected_revision(
                 run_id, store, corrected_text, source_revision_id=source_revision_id
+            )
+        except RunNotFoundError as error:
+            raise HTTPException(status_code=404, detail="找不到這筆轉錄工作") from error
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+
+    @app.post("/api/runs/{run_id}/segments/{segment_id}/correct", response_model=EvaluationRun)
+    async def correct_segment(
+        run_id: str,
+        segment_id: str,
+        corrected_text: str = Form(...),
+        speaker: str | None = Form(None),
+        source_revision_id: str | None = Form(None),
+    ) -> EvaluationRun:
+        try:
+            return update_segment_revision(
+                run_id,
+                store,
+                segment_id,
+                corrected_text,
+                speaker=speaker,
+                source_revision_id=source_revision_id,
             )
         except RunNotFoundError as error:
             raise HTTPException(status_code=404, detail="找不到這筆轉錄工作") from error

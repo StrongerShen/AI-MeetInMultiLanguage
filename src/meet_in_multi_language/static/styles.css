@@ -146,3 +146,15 @@ button.danger-outline:hover:not(:disabled) { background: #fff5f5; border-color: 
   .filter-toolbar { flex-direction: column; align-items: flex-start; }
   .filter-input { width: 100%; }
 }
+
+/* 單段快速校訂與草稿動作按鈕 */
+.segment-actions { display: inline-flex; align-items: center; gap: 4px; margin-left: auto; opacity: 0.45; transition: opacity .15s; }
+.segment-row:hover .segment-actions { opacity: 1; }
+.segment-action-btn { background: #fff; border: 1px solid #cad8cf; border-radius: 4px; padding: 1px 6px; font-size: 0.75rem; cursor: pointer; color: #3a5b47; transition: all .15s; }
+.segment-action-btn:hover { background: #eaf3ed; color: #176b43; border-color: #176b43; }
+
+/* 行內單段校訂面板 */
+.segment-inline-edit { margin-top: 8px; padding: 10px; background: #fafdfb; border: 1px solid #bcd4c3; border-radius: 6px; display: grid; gap: 8px; }
+.segment-inline-edit textarea { width: 100%; font-size: 0.9rem; padding: 6px 8px; border: 1px solid #b5ccbd; border-radius: 4px; box-sizing: border-box; }
+.segment-inline-edit .inline-edit-controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.segment-inline-edit .inline-edit-controls input { width: 130px; font-size: 0.82rem; padding: 4px 6px; border: 1px solid #b5ccbd; border-radius: 4px; }
