@@ -106,7 +106,8 @@ engineSelect.addEventListener("change", validateEngineOption);
 
 function renderSegments(segments, runId) {
   if (!segments || !segments.length) return "<p>（無段落資訊）</p>";
-  return segments.map((seg) => {
+  return segments.map((seg, index) => {
+    const seqNum = index + 1;
     const timeStr = seg.start_ms != null ? formatMs(seg.start_ms) : "";
     const timeButton = timeStr ? `
       <button type="button" class="segment-time-btn" title="點擊跳轉播放此段落" onclick="playAudioAt('${escapeHtml(runId)}', ${seg.start_ms || 0}, '${escapeHtml(seg.segment_id)}')">
@@ -120,10 +121,11 @@ function renderSegments(segments, runId) {
     const flagsHtml = (seg.quality_flags || []).map(f => `<span class="quality-flag" title="品質警示">${escapeHtml(f)}</span>`).join("");
     const startMs = seg.start_ms != null ? seg.start_ms : "";
     const endMs = seg.end_ms != null ? seg.end_ms : (seg.start_ms != null ? seg.start_ms + 4000 : "");
+    const segLabel = seg.segment_id.startsWith("chunk-") ? `#${seqNum}` : escapeHtml(seg.segment_id);
     return `
-      <div class="segment-row" id="seg-row-${escapeHtml(seg.segment_id)}" data-seg-id="${escapeHtml(seg.segment_id)}" data-start-ms="${startMs}" data-end-ms="${endMs}">
+      <div class="segment-row" id="seg-row-${escapeHtml(seg.segment_id)}" data-seg-id="${escapeHtml(seg.segment_id)}" data-seq-index="${seqNum}" data-start-ms="${startMs}" data-end-ms="${endMs}">
         <span class="segment-meta">
-          <span class="segment-tag">${escapeHtml(seg.segment_id)}</span>
+          <span class="segment-tag" title="段落 #${seqNum} (${escapeHtml(seg.segment_id)})">${segLabel}</span>
           ${timeButton}
           ${speakerHtml}
         </span>
@@ -163,9 +165,9 @@ function renderSummary(summary, runId) {
 
   const actionsHtml = (summary.action_items || []).map(a => `
     <li>
-      <strong>任務：</strong>${escapeHtml(a.task)}
-      · <strong>負責人：</strong>${escapeHtml(a.owner || "未指定")}
-      · <strong>期限：</strong>${escapeHtml(a.due_date || a.original_due_text || "未指定")}
+      <strong>${escapeHtml(a.task)}</strong>
+      ${a.owner ? `（負責人：${escapeHtml(a.owner)}）` : ""}
+      ${a.due_date ? `（期限：${escapeHtml(a.due_date)}）` : (a.original_due_text ? `（期限描述：${escapeHtml(a.original_due_text)}）` : "")}
       ${(a.evidence_ids || []).map(id => `<button type="button" class="evidence-link" data-run-id="${escapeHtml(runId)}" data-evidence-id="${escapeHtml(id)}">${escapeHtml(id)}</button>`).join(" ")}
     </li>
   `).join("");
@@ -198,14 +200,17 @@ window.highlightSegment = function(runId, segId) {
   const card = document.getElementById(`run-card-${runId}`);
   if (!card) return;
   const targetId = segId.replace(/^\[+|\]+$/g, "");
-  // 嘗試匹配 seg-001 或 segment-1
+  // 嘗試匹配 seg-001、segment-1 或跨切段序號
   const segmentRows = Array.from(card.querySelectorAll(".segment-row"));
   let el = segmentRows.find(row => row.dataset.segId === targetId);
   if (!el) {
     const num = parseInt(targetId.replace(/[^0-9]/g, ""), 10);
     if (!isNaN(num)) {
       const aliases = new Set([`segment-${num}`, `seg-${String(num).padStart(3, "0")}`]);
-      el = segmentRows.find(row => aliases.has(row.dataset.segId));
+      el = segmentRows.find(row => aliases.has(row.dataset.segId) || row.dataset.seqIndex === String(num));
+      if (!el && num >= 1 && num <= segmentRows.length) {
+        el = segmentRows[num - 1];
+      }
     }
   }
   if (el) {
