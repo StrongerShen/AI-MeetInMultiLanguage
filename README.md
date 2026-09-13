@@ -411,6 +411,43 @@ LLM 的臺語同音字校正只能產生「校正版」，不得覆蓋 ASR 原�
 3. 保持 `var/` 與真實錄音不受 Git 追蹤；測試不得連線至真實外部服務。
 4. 未經使用者明確指示，不得執行 `git commit` 或 `git push`。
 
+### 2026-09-13 Codex 程式碼審查交接工作
+
+目前版本雖已通過 69 項測試，但 Codex 複查後判定仍有下列安全性、測試隔離與實機穩定度問題；完成高優先問題及其回歸測試前，不應視為可正式簽核版本。此清單優先於上方較早的完成狀態敘述。
+
+#### P0：簽核前必須修正
+
+- [ ] **移除前端持久型 XSS 風險**：`src/meet_in_multi_language/static/app.js` 的逐字稿段落、講者更名、草稿帶入及工作刪除仍把 `segment_id`、講者名稱、ASR 文字與原始檔名插入 inline `onclick`。`escapeHtml()` 無法安全保護 JavaScript 字串內容。全面改用 `data-*` 屬性與集中式 `addEventListener` 事件委派，並移除所有 inline JavaScript。`toggleSegmentEdit()` 亦不得直接把未信任的段落 ID 插入 CSS selector；改用安全的 dataset 比對或正確的 selector escaping。
+- [ ] **封鎖 `stored_filename` 路徑穿越**：`RunStore.audio_path()` 目前直接串接 `upload_dir / stored_filename`。限制為純檔名，並以解析後路徑的 containment 檢查確保目標仍位於 `upload_dir`；音訊讀取與工作刪除都必須共用此保護。加入 `../`、絕對路徑、反斜線與符號連結等攻擊案例測試。
+- [ ] **恢復 pytest 完全隔離**：`tests/test_pipeline.py` 雖注入假的轉錄器及 Ollama client，`run_pipeline()` 仍會向本機 Speaches `/api/ps/{model_id}` 發出真實 DELETE。將模型卸載／顯存切換元件改為可注入相依元件，測試一律使用 fake 或 mock；加入測試防線，確保 pytest 不會連線 `127.0.0.1:8001`、`127.0.0.1:11434` 或任何真實外部服務。
+- [ ] **卸載未確認時禁止載入下一模型**：`GpuWorkQueue.unload_speaches()` 不可在逾時後直接視為成功；CLI pipeline 也不可捕捉所有卸載例外後靜默繼續。遇到逾時、非成功 HTTP 狀態或卸載結果未知時，應停止 Ollama 階段並回報可理解的錯誤，或輪詢模型／顯存狀態直到確認釋放。加入卸載逾時、HTTP 500、取消與例外時不載入 Ollama、鎖必定釋放的測試。
+- [ ] **統一 Web 與 CLI 的 GPU 互斥範圍**：`pipeline.py` 尚未使用 Web 的 `GpuWorkQueue`，因此 CLI、Web 或多個程序並行時可能同時占用 8 GiB 顯存。設計能涵蓋所有入口與多程序的主機級互斥機制，並確認 Breeze 與 Ollama 絕不共存。
+
+#### P1：重要邊界與資料一致性
+
+- [ ] **安全刪除執行中工作**：`DELETE /api/runs/{id}` 必須拒絕或先取消 `transcribing`／`summarizing` 背景工作，並與 GPU 佇列協調，避免刪除後的 worker 繼續執行或寫回。處理 JSON 已刪但音訊刪除失敗的半完成狀態，確保不產生孤兒檔案。
+- [ ] **強化摘要驗證一致性**：CLI pipeline 除 `schema_valid` 外，也必須拒絕未知 `evidence_ids` 與非臺灣慣用詞；測試資料應使用逐字稿實際存在的證據 ID。明確測試 `num_ctx: 24576` 與 `keep_alive: 0` 有傳入 Ollama。
+- [ ] **保留全篇校訂的段落結構**：目前全文校訂會合併成單一 `seg-001`，導致逐段時間戳與講者資訊遺失。改為可逐段對應的校訂格式，或在介面明確限制全文模式並保留來源段落映射；`raw_asr` 仍須永久不可修改、清除或移出版本清單。
+- [ ] **補齊 API 輸入限制與並行控制**：為校訂文字、講者名稱及模型名稱設定合理長度；釐清不存在段落應回傳 400 或 404 的契約；摘要防重檢查與狀態更新應為原子操作，避免兩個請求同時排入。
+- [ ] **評估多程序儲存安全**：目前 `RLock` 只保護單一程序。若允許多個 Uvicorn worker，需使用檔案鎖、SQLite 或其他具原子交易的儲存方式，避免版本 lost update 與共用 `.json.tmp` 競爭。
+
+#### P2：回歸測試、診斷與文件一致性
+
+- [ ] 為音訊 Range Request 加入正式測試：有效範圍回傳 `206`、正確 `Content-Range` 與內容，無效範圍回傳 `416`。2026-09-13 的一次性 ASGI 實測已確認目前 Starlette `FileResponse` 行為正確，但現有測試只覆蓋完整下載的 `200`。
+- [ ] 改善 `meet-eval doctor` 記憶體判定：不可只按總 RAM 判定正常；可用 RAM 過低時應顯示警告。本次實機為 46.9 GiB RAM，但檢測當下僅約 0.5 GiB 可用。
+- [ ] 統一臺灣繁體中文用詞：將 `doctor.py` 的「正常運行」改為「正常運作」，將 `docs/tuning.md` 的「實測數據」改為「實測資料」。`ollama_eval.py` denylist 與其負面測試內的禁用詞屬預期測試資料，不需移除。
+- [ ] 修正文件測試數量不一致：README 前段仍寫 47 項，應與目前 69 項及日後實際測試數量同步。
+- [ ] 若匯出 API 指定不存在的 `revision_id`，不得靜默改用目前版本；應依契約回傳明確的 400 或 404。
+
+#### AGY 完成條件
+
+1. 每項修正都要新增或更新對應的自動化測試，且測試不可接觸真實 Speaches、Ollama、錄音檔或 `var/`。
+2. 必須執行：`UV_CACHE_DIR=/tmp/ai-meet-uv-cache uv run pytest`、`python3 -m compileall src/ tests/`、`node --check src/meet_in_multi_language/static/app.js`、`git diff --check`。
+3. 執行用詞掃描，確認使用者可見文字、日誌、註解及文件均採臺灣繁體中文；禁用詞偵測清單與負面測試案例可保留。
+4. 檢查 `git status` 與 `git ls-files`，確認 `var/` 及 `*.mp3`、`*.wav`、`*.m4a`、`*.webm` 等真實音訊沒有被追蹤。
+5. 修改功能或測試數量後同步更新本 README；未經使用者明確指示不得執行 `git commit` 或 `git push`。
+6. 回報修正摘要、測試結果、尚存風險及建議 commit 訊息，等待使用者確認後再提交。
+
 ## 參考
 
 - [OpenAI Models：GPT-6 Astra、GPT-5.6 Sol、GPT-5.6 Terra 的定位](https://developers.openai.com/api/docs/models)
