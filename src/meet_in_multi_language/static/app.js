@@ -76,9 +76,13 @@ async function loadHealth() {
       gpuQueueDetail.textContent = gpu.queue_length > 0 ? `等待排程（排隊數：${gpu.queue_length}）` : "無進行中工作";
     }
 
-    const limitMb = Math.floor(systemHealth.max_upload_bytes / 1024 / 1024);
+    const limitMiB = Math.floor(systemHealth.max_upload_bytes / 1024 / 1024);
     statusNode.className = "status";
-    statusNode.textContent = `伺服器已就緒；目前單檔限制 ${limitMb} MB。Breeze 與 Ollama 透過單一 GPU 互斥佇列保護顯存。`;
+    statusNode.textContent = `伺服器已就緒；目前單檔限制 ${limitMiB} MiB。Breeze 與 Ollama 透過單一 GPU 互斥佇列保護顯存。`;
+    const hintNode = document.querySelector("#upload-limit-hint");
+    if (hintNode) {
+      hintNode.textContent = `支援 WAV、MP3、M4A 等格式，目前原型單檔上限 ${limitMiB} MiB。`;
+    }
     validateEngineOption();
   } catch {
     statusNode.textContent = "無法連線至伺服器，請確認後端服務是否正在執行。";
