@@ -123,7 +123,11 @@ def test_breeze_upload_runs_without_openai_key(tmp_path: Path, monkeypatch) -> N
     async def fake_unload(model: str) -> None:
         return None
 
+    async def fake_get_loaded() -> set[str]:
+        return set()
+
     monkeypatch.setattr(gpu_queue, "unload_ollama", fake_unload)
+    monkeypatch.setattr(gpu_queue, "_get_loaded_ollama_models", fake_get_loaded)
     # 沒有設定 openai_api_key (None)
     app = api.create_app(Settings(tmp_path, 1024 * 1024, None), gpu_queue=gpu_queue)
 

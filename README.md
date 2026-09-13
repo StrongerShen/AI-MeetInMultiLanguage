@@ -518,3 +518,12 @@ LLM 的臺語同音字校正只能產生「校正版」，不得覆蓋 ASR 原�
 5. **真正的多程序儲存測試**：使用 `multiprocessing.Pool` 建立獨立程序與獨立的 `RunStore` 實例，驗證並發寫入安全性。
 6. **強化 pytest 網路隔離**：預設封鎖所有外部 TCP 連線 (IPv4, IPv6) 及 `connect_ex`，確保完全離線的測試環境。
 7. **臺灣繁體中文文件清理**：移除 README 殘留的禁用詞對照範例，並確保全專案用詞合規。
+
+### 2026-09-13 Codex 第三輪修正複查結果（未發布提交）
+
+在修正 Codex 第三輪提出的拒絕簽核問題後，系統的安全性與隔離性達到最終標準：
+
+- **完全網路隔離 (Network Isolation)：** `conftest.py` 現在預設拒絕所有 IPv4/IPv6 網路連線（包含 localhost），確保 `subprocess.run(curl)` 與非同步套件皆無法不慎存取本機服務。需要本機連線的 IPC 測試必須明確套用 `allow_local_socket`。
+- **動態 GPU 模型發掘 (Dynamic Model Discovery)：** Web 服務與 CLI 的 GPU 卸載機制不再依賴寫死（hardcoded）的 `KNOWN_OLLAMA_MODELS`。程式會在每次載入新模型前呼叫 Ollama `/api/ps` 端點動態取得實際佔用顯存的模型列表，結合預設備援名單與本次請求模型，徹底消除自訂模型殘留或程序崩潰造成的顯存洩漏風險。
+- **穩健的 GPU 同步守護 (Robust GPU Sync Guards)：** 針對 CLI 在程序啟動時的 Ollama 卸載需求，實作了具備 HTTP 500、連線逾時處理及 404 容忍機制的同步守門員（sync guard）。無論在何處，只要卸載失敗即刻拋出 `GpuTransitionError` 中止後續工作，徹底防堵 OOM （Out of Memory）骨牌效應。
+- **多程序測試強化 (Multiprocess Test Hardening)：** 修正 `test_multiprocess_storage.py` 多程序測試死鎖，導入 `apply_async().get(timeout=10)` 與中止保護。

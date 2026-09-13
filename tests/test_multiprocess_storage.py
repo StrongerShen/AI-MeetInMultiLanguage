@@ -87,12 +87,19 @@ def test_multiprocess_concurrent_append_revisions(tmp_path: Path) -> None:
     num_workers = 8
 
     # 使用 multiprocessing.Pool 啟動真正的獨立程序
-    # 每個程序會建立自己的 RunStore 實例
+    # 3. 獨立程序同時追加版本 (使用 apply_async 以支援逾時)
     with multiprocessing.Pool(processes=num_workers) as pool:
-        results = pool.starmap(
-            _worker_append_revision,
-            [(str(tmp_path), run_id, i) for i in range(1, num_workers + 1)],
-        )
+        async_results = [
+            pool.apply_async(_worker_append_revision, (str(tmp_path), run_id, i))
+            for i in range(1, num_workers + 1)
+        ]
+
+        try:
+            results = [r.get(timeout=10) for r in async_results]
+        except BaseException:
+            pool.terminate()
+            pool.join()
+            raise
 
     # 驗證所有 worker 都成功
     for result in results:

@@ -6,8 +6,16 @@ import wave
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from meet_in_multi_language.models import Engine, TranscriptResult, TranscriptSegment
 from meet_in_multi_language.pipeline import run_pipeline
+from meet_in_multi_language import gpu as gpu_module
+
+@pytest.fixture(autouse=True)
+def mock_gpu_sync_unload(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Mock 出去 pipeline 的同步 GPU 卸載，避免觸發網路防線。"""
+    monkeypatch.setattr(gpu_module, "sync_unload_all_loaded_ollama_models", lambda *args, **kwargs: None)
 
 
 def make_test_wav(path: Path, duration_seconds: int = 2) -> Path:
@@ -133,6 +141,30 @@ def test_pipeline_unloader_failure_aborts_summary(tmp_path: Path) -> None:
             transcriber=FakeTranscriber(),
             ollama_client=FakeOllamaClient(),
             speaches_unloader=broken_unloader,
+        )
+
+
+def test_pipeline_ollama_unloader_failure_aborts_asr(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from meet_in_multi_language.gpu import GpuTransitionError
+    from meet_in_multi_language import gpu as gpu_module
+
+    def broken_ollama_unloader(url: str, models: set[str]) -> None:
+        raise GpuTransitionError("Ollama 卸載失敗，拒絕執行 ASR")
+
+    monkeypatch.setattr(gpu_module, "sync_unload_all_loaded_ollama_models", broken_ollama_unloader)
+
+    audio_path = make_test_wav(tmp_path / "fail_unload2.wav", duration_seconds=1)
+    output_dir = tmp_path / "output_fail2"
+
+    with pytest.raises(GpuTransitionError, match="Ollama 卸載失敗"):
+        run_pipeline(
+            source_audio=audio_path,
+            output_dir=output_dir,
+            engine="breeze",
+            summary_model="qwen3.5:9b",
+            transcriber=FakeTranscriber(),
+            ollama_client=FakeOllamaClient(),
+            speaches_unloader=lambda url, m: None,
         )
 
 

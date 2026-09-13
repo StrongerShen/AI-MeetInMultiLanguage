@@ -135,20 +135,19 @@ def run_pipeline(
     summary_path: Path | None = None
 
     with gpu_ctx:
-        if transcriber is None:
-            if engine == "breeze":
-                # 跨程序安全：進入 Speaches 前同步卸載 Ollama
-                from .gpu import KNOWN_OLLAMA_MODELS
-                for m in KNOWN_OLLAMA_MODELS:
-                    try:
-                        with httpx.Client(timeout=3.0) as http_client:
-                            http_client.post(f"{ollama_url.rstrip('/')}/api/generate", json={"model": m, "keep_alive": 0})
-                    except Exception:
-                        pass
+        if engine == "breeze":
+            # 跨程序安全：進入 Speaches 前同步卸載 Ollama (不論是否提供自訂 transcriber)
+            from .gpu import KNOWN_OLLAMA_MODELS, sync_unload_all_loaded_ollama_models
+            fallback_models = set(KNOWN_OLLAMA_MODELS)
+            if summary_model:
+                fallback_models.add(summary_model)
+            sync_unload_all_loaded_ollama_models(ollama_url, fallback_models)
 
+            if transcriber is None:
                 profile = PROFILES["breeze"]
                 transcriber = SpeachesTranscriber(speaches_url, profile)
-            else:
+        else:
+            if transcriber is None:
                 api_key = openai_api_key or os.getenv("OPENAI_API_KEY", "")
                 if not api_key:
                     raise ValueError(f"使用 {engine} 需要提供 OPENAI_API_KEY")

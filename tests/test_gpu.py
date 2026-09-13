@@ -404,6 +404,14 @@ def test_speaches_unload_uses_encoded_model_id(
         async def delete(self, url: str):
             requested_urls.append(url)
             return Response()
+            
+        async def get(self, url: str):
+            req = httpx.Request("GET", url)
+            return httpx.Response(200, request=req, json={"models": []})
+            
+        async def post(self, url: str, json: dict):
+            req = httpx.Request("POST", url)
+            return httpx.Response(200, request=req)
 
     monkeypatch.setattr(gpu_module.httpx, "AsyncClient", Client)
     queue = GpuWorkQueue(speaches_url="http://speaches.test/v1")
@@ -434,6 +442,14 @@ def test_speaches_unload_tolerates_connect_error_and_404(
             response = httpx.Response(404, request=request)
             response.raise_for_status()
 
+        async def get(self, url: str):
+            req = httpx.Request("GET", url)
+            return httpx.Response(200, request=req, json={"models": []})
+            
+        async def post(self, url: str, json: dict):
+            req = httpx.Request("POST", url)
+            return httpx.Response(200, request=req)
+
     monkeypatch.setattr(gpu_module.httpx, "AsyncClient", Client404)
     queue = GpuWorkQueue(speaches_url="http://speaches.test/v1")
     asyncio.run(queue.unload_speaches())
@@ -449,6 +465,12 @@ def test_speaches_unload_tolerates_connect_error_and_404(
             return None
 
         async def delete(self, url: str):
+            raise httpx.ConnectError("Connection refused")
+
+        async def get(self, url: str):
+            raise httpx.ConnectError("Connection refused")
+            
+        async def post(self, url: str, json: dict):
             raise httpx.ConnectError("Connection refused")
 
     monkeypatch.setattr(gpu_module.httpx, "AsyncClient", ClientConnectError)
@@ -472,6 +494,14 @@ def test_speaches_unload_timeout_raises_and_releases_lock(
 
         async def delete(self, url: str):
             raise httpx.TimeoutException("卸載請求超時")
+            
+        async def get(self, url: str):
+            req = httpx.Request("GET", url)
+            return httpx.Response(200, request=req, json={"models": []})
+            
+        async def post(self, url: str, json: dict):
+            req = httpx.Request("POST", url)
+            return httpx.Response(200, request=req)
 
     monkeypatch.setattr(gpu_module.httpx, "AsyncClient", TimeoutClient)
     queue = GpuWorkQueue(speaches_url="http://speaches.test/v1")
@@ -499,6 +529,14 @@ def test_speaches_unload_http_500_raises_and_releases_lock(
             req = httpx.Request("DELETE", url)
             resp = httpx.Response(500, request=req)
             resp.raise_for_status()
+
+        async def get(self, url: str):
+            req = httpx.Request("GET", url)
+            return httpx.Response(200, request=req, json={"models": []})
+            
+        async def post(self, url: str, json: dict):
+            req = httpx.Request("POST", url)
+            return httpx.Response(200, request=req)
 
     monkeypatch.setattr(gpu_module.httpx, "AsyncClient", ServerErrorClient)
     queue = GpuWorkQueue(speaches_url="http://speaches.test/v1")
@@ -586,3 +624,83 @@ def test_async_host_gpu_lock_mutual_exclusion(tmp_path: Path) -> None:
             pass
 
     asyncio.run(run_test())
+
+# === 動態查詢 Ollama 模型與同步卸載測試 ===
+
+def test_get_loaded_ollama_models(monkeypatch: pytest.MonkeyPatch) -> None:
+    """測試非同步與同步查詢實際載入模型的行為。"""
+    from meet_in_multi_language.gpu import sync_get_loaded_ollama_models
+    import httpx
+
+    class MockPsClient:
+        def __init__(self, **kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def get(self, url):
+            req = httpx.Request("GET", url)
+            resp = httpx.Response(200, request=req, json={"models": [{"name": "loaded1:latest"}, {"name": "loaded2:8b"}]})
+            return resp
+
+    monkeypatch.setattr(gpu_module.httpx, "Client", MockPsClient)
+    models = sync_get_loaded_ollama_models("http://ollama.test")
+    assert models == {"loaded1:latest", "loaded2:8b"}
+
+    class MockAsyncPsClient:
+        def __init__(self, **kwargs): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *args): pass
+        async def get(self, url):
+            req = httpx.Request("GET", url)
+            resp = httpx.Response(200, request=req, json={"models": [{"name": "loaded3"}]})
+            return resp
+
+    monkeypatch.setattr(gpu_module.httpx, "AsyncClient", MockAsyncPsClient)
+    queue = GpuWorkQueue("http://ollama.test")
+    async_models = asyncio.run(queue._get_loaded_ollama_models())
+    assert async_models == {"loaded3"}
+
+
+def test_sync_unload_all_loaded_ollama_models(monkeypatch: pytest.MonkeyPatch) -> None:
+    """測試同步卸載 Ollama 包含動態查詢與 fallback 模型的行為。"""
+    from meet_in_multi_language.gpu import sync_unload_all_loaded_ollama_models
+    import httpx
+    
+    unloaded_models = []
+
+    class MockPsClient:
+        def __init__(self, **kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def get(self, url):
+            req = httpx.Request("GET", url)
+            return httpx.Response(200, request=req, json={"models": [{"name": "loaded_dynamic"}]})
+        def post(self, url, json):
+            unloaded_models.append(json["model"])
+            req = httpx.Request("POST", url)
+            return httpx.Response(200, request=req)
+
+    monkeypatch.setattr(gpu_module.httpx, "Client", MockPsClient)
+    
+    sync_unload_all_loaded_ollama_models("http://ollama.test", {"fallback_static"})
+    
+    # 驗證動態與靜態模型皆被卸載
+    assert set(unloaded_models) == {"loaded_dynamic", "fallback_static"}
+
+def test_sync_unload_ollama_failure_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    """測試同步卸載失敗會拋出 GpuTransitionError。"""
+    from meet_in_multi_language.gpu import sync_unload_ollama
+    import httpx
+
+    class MockFailClient:
+        def __init__(self, **kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def post(self, url, json):
+            req = httpx.Request("POST", url)
+            resp = httpx.Response(500, request=req)
+            resp.raise_for_status()
+
+    monkeypatch.setattr(gpu_module.httpx, "Client", MockFailClient)
+    
+    with pytest.raises(GpuTransitionError, match="無法卸載 Ollama 模型 fail_model"):
+        sync_unload_ollama("http://ollama.test", "fail_model")

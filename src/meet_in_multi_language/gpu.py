@@ -112,6 +112,44 @@ class GpuTransitionError(RuntimeError):
     """GPU 模型無法安全切換。"""
 
 
+def sync_get_loaded_ollama_models(ollama_url: str) -> set[str]:
+    """同步查詢 Ollama 實際載入顯存的模型。"""
+    try:
+        with httpx.Client(timeout=5.0) as client:
+            resp = client.get(f"{ollama_url.rstrip('/')}/api/ps")
+            resp.raise_for_status()
+            data = resp.json()
+            return {m["name"] for m in data.get("models", [])}
+    except httpx.ConnectError:
+        return set()
+    except Exception as err:
+        raise GpuTransitionError(f"無法查詢 Ollama 載入狀態：{err}") from err
+
+def sync_unload_ollama(ollama_url: str, model: str) -> None:
+    """同步卸載指定的 Ollama 模型。"""
+    if not model:
+        return
+    try:
+        with httpx.Client(timeout=10.0) as client:
+            resp = client.post(
+                f"{ollama_url.rstrip('/')}/api/generate",
+                json={"model": model, "keep_alive": 0},
+            )
+            resp.raise_for_status()
+    except httpx.ConnectError:
+        pass
+    except httpx.HTTPStatusError as err:
+        if err.response.status_code != 404:
+            raise GpuTransitionError(f"無法卸載 Ollama 模型 {model}：{err}") from err
+    except Exception as err:
+        raise GpuTransitionError(f"無法卸載 Ollama 模型 {model}：{err}") from err
+
+def sync_unload_all_loaded_ollama_models(ollama_url: str, fallback_models: set[str]) -> None:
+    """同步卸載所有 Ollama 模型（先嘗試查詢實際載入的，再加入 fallback 名單）。"""
+    models_to_unload = sync_get_loaded_ollama_models(ollama_url) | fallback_models
+    for m in models_to_unload:
+        sync_unload_ollama(ollama_url, m)
+
 @dataclass
 class GpuQueueStatus:
     is_busy: bool
@@ -127,7 +165,7 @@ class GpuWorkQueue:
 
     跨程序安全策略：不依賴程序內歷史狀態（如 _last_category_used）。
     每次進入 Ollama 工作前，都會嘗試卸載 Breeze ASR 模型。
-    每次進入 Speaches 工作前，都會嘗試卸載所有已知的 Ollama 模型。
+    每次進入 Speaches 工作前，都會動態查詢並嘗試卸載所有 Ollama 模型。
     卸載逾時、HTTP 失敗或狀態未知時，禁止開始下一模型。
     """
 
@@ -145,7 +183,14 @@ class GpuWorkQueue:
         self.ollama_model = ollama_model
         self.speaches_model = speaches_model
         self.gpu_lock_file = gpu_lock_file
-        self.known_ollama_models = known_ollama_models if known_ollama_models is not None else list(KNOWN_OLLAMA_MODELS)
+        
+        # 將傳入的已知模型與設定的 Ollama 模型皆納入防護網
+        self.known_ollama_models = set(KNOWN_OLLAMA_MODELS)
+        if known_ollama_models:
+            self.known_ollama_models.update(known_ollama_models)
+        if self.ollama_model:
+            self.known_ollama_models.add(self.ollama_model)
+            
         self._lock = asyncio.Lock()
         self._waiting_count = 0
         self._active_task: str | None = None
@@ -163,6 +208,19 @@ class GpuWorkQueue:
             last_category_used=self._last_category_used,
             completed_tasks=self._completed_tasks,
         )
+
+    async def _get_loaded_ollama_models(self) -> set[str]:
+        """動態查詢 Ollama 實際載入顯存的模型。"""
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                response = await client.get(f"{self.ollama_url}/api/ps")
+                response.raise_for_status()
+                data = response.json()
+                return {m["name"] for m in data.get("models", [])}
+        except httpx.ConnectError:
+            return set()
+        except Exception as err:
+            raise GpuTransitionError(f"無法查詢 Ollama 載入狀態：{err}") from err
 
     async def unload_ollama(self, model: str) -> None:
         """只卸載本工作明確指定的 Ollama 模型。"""
@@ -186,12 +244,17 @@ class GpuWorkQueue:
         except (httpx.HTTPError, ValueError) as error:
             raise GpuTransitionError(f"無法卸載 Ollama 模型 {model}：{error}") from error
 
-    async def unload_all_known_ollama_models(self) -> None:
-        """嘗試卸載本專案所有已知的 Ollama 模型，確保跨程序安全。
+    async def unload_all_known_ollama_models(self, extra_model: str = "") -> None:
+        """動態查詢並嘗試卸載所有 Ollama 模型，確保跨程序安全。
 
         任何一個模型卸載失敗（非 ConnectError、非 404）時拋出 GpuTransitionError。
         """
-        for model in self.known_ollama_models:
+        models_to_unload = await self._get_loaded_ollama_models()
+        models_to_unload.update(self.known_ollama_models)
+        if extra_model:
+            models_to_unload.add(extra_model)
+            
+        for model in models_to_unload:
             await self.unload_ollama(model)
 
     async def unload_speaches(self, model: str | None = None) -> None:
