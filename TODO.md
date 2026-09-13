@@ -30,7 +30,7 @@
 
 - [x] 驗證 Breeze → Ollama 與 Ollama → Breeze 模型切換。
 - [x] 驗證 Web → CLI 與 CLI → Web 交錯執行。
-- [ ] 模擬 Speaches／Ollama 離線，確認 fail closed 與錯誤訊息。
+- [x] 模擬 Speaches／Ollama 離線，確認 fail closed 與錯誤訊息。
 - [x] 確認工作完成後顯存回到約 213 MiB。
 - [ ] 建立至少 60 分鐘人工標註集，涵蓋臺灣華語、英語、日語、臺語、混語、重疊發言與噪音。
 - [ ] 量測 CER、WER、DER、摘要證據有效率，以及決議／待辦召回率。
