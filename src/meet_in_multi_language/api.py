@@ -169,8 +169,9 @@ def create_app(
                 while chunk := await audio.read(1024 * 1024):
                     written += len(chunk)
                     if written > settings.max_upload_bytes:
+                        limit_mb = settings.max_upload_bytes // (1024 * 1024)
                         raise HTTPException(
-                            status_code=413, detail="音訊超過目前 25 MB 原型限制"
+                            status_code=413, detail=f"音訊超過目前 {limit_mb} MB 原型限制"
                         )
                     output.write(chunk)
         except Exception:
