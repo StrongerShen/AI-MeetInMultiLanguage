@@ -112,7 +112,7 @@ class OllamaClient:
         self,
         model: str,
         transcript: str,
-        keep_alive: int | str = 0,
+        keep_alive: int | str = "0m",
         num_ctx: int = 24576,
     ) -> dict[str, Any]:
         response = self._client.post(
@@ -135,7 +135,7 @@ class OllamaClient:
 
     def unload(self, model: str = "") -> None:
         try:
-            payload: dict[str, Any] = {"keep_alive": 0}
+            payload: dict[str, Any] = {"keep_alive": "0m"}
             if model:
                 payload["model"] = model
             self._client.post("/api/generate", json=payload)
@@ -161,7 +161,7 @@ class AsyncOllamaClient:
         self,
         model: str,
         transcript: str,
-        keep_alive: int | str = 0,
+        keep_alive: int | str = "0m",
         num_ctx: int = 24576,
     ) -> dict[str, Any]:
         response = await self._client.post(
@@ -184,7 +184,7 @@ class AsyncOllamaClient:
 
     async def unload(self, model: str = "") -> None:
         try:
-            payload: dict[str, Any] = {"keep_alive": 0}
+            payload: dict[str, Any] = {"keep_alive": "0m"}
             if model:
                 payload["model"] = model
             await self._client.post("/api/generate", json=payload)

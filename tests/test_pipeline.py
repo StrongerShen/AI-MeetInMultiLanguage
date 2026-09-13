@@ -100,7 +100,7 @@ def test_pipeline_end_to_end(tmp_path: Path) -> None:
     assert len(unloaded_calls) == 1
     assert "Breeze-ASR-26" in unloaded_calls[0][1]
     assert len(fake_ollama.calls) == 1
-    assert fake_ollama.calls[0]["keep_alive"] == 0
+    assert fake_ollama.calls[0]["keep_alive"] == "0m"
     assert fake_ollama.calls[0]["num_ctx"] == 24576
 
     # 驗證產物檔案

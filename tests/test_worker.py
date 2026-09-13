@@ -144,7 +144,7 @@ def test_long_summary_is_processed_in_chunks() -> None:
     )
 
     assert json.loads(content)["overview"] == "分段摘要"
-    assert client.keep_alive_values == ["5m", "5m", 0]
+    assert client.keep_alive_values == ["5m", "5m", "0m"]
 
 
 def test_cancelled_async_transcription_updates_status(tmp_path: Path) -> None:

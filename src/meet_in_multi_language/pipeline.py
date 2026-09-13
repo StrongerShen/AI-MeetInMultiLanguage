@@ -178,7 +178,7 @@ def run_pipeline(
             client = ollama_client or OllamaClient(ollama_url)
             formatted_transcript = format_transcript_for_summary(transcript_result)
             summary_raw = client.summarize(
-                summary_model, formatted_transcript, keep_alive=0, num_ctx=24576
+                summary_model, formatted_transcript, keep_alive="0m", num_ctx=24576
             )
             content = summary_raw.get("message", {}).get("content", "")
             validation = validate_summary(content, formatted_transcript)

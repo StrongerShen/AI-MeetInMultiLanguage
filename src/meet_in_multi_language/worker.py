@@ -91,7 +91,7 @@ async def _summarize_content(
 ) -> str:
     chunks = _split_summary_input(transcript)
     if len(chunks) == 1:
-        response = await ollama_client.summarize(model, transcript, keep_alive=0)
+        response = await ollama_client.summarize(model, transcript, keep_alive="0m")
         return str(response.get("message", {}).get("content", ""))
 
     partial_summaries: list[dict[str, object]] = []
@@ -107,7 +107,7 @@ async def _summarize_content(
         "不得新增未出現在分段摘要中的事實或引用。\n"
         + json.dumps(partial_summaries, ensure_ascii=False)
     )
-    response = await ollama_client.summarize(model, synthesis_input, keep_alive=0)
+    response = await ollama_client.summarize(model, synthesis_input, keep_alive="0m")
     return str(response.get("message", {}).get("content", ""))
 
 

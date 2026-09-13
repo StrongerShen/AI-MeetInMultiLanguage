@@ -381,7 +381,7 @@ def test_ollama_unload_sends_explicit_model(monkeypatch: pytest.MonkeyPatch) -> 
     assert requests == [
         (
             "http://ollama.test/api/generate",
-            {"model": "qwen3.5:9b", "keep_alive": 0},
+            {"model": "qwen3.5:9b", "keep_alive": "0m"},
         )
     ]
 

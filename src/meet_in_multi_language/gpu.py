@@ -131,7 +131,7 @@ def sync_unload_ollama(ollama_url: str, model: str) -> None:
         with httpx.Client(timeout=10.0) as client:
             resp = client.post(
                 f"{ollama_url.rstrip('/')}/api/generate",
-                json={"model": model, "keep_alive": 0},
+                json={"model": model, "keep_alive": "0m"},
             )
             resp.raise_for_status()
     except httpx.HTTPStatusError as err:
@@ -224,7 +224,7 @@ class GpuWorkQueue:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 response = await client.post(
                     f"{self.ollama_url}/api/generate",
-                    json={"model": model, "keep_alive": 0},
+                    json={"model": model, "keep_alive": "0m"},
                 )
                 response.raise_for_status()
         except httpx.HTTPStatusError as error:
