@@ -535,3 +535,11 @@ LLM 的臺語同音字校正只能產生「校正版」，不得覆蓋 ASR 原�
 - **嚴格的 ConnectError 防護：** 全面移除了 GPU 切換（包含 Ollama 探索、Ollama 卸載、Speaches 卸載）中對 `ConnectError` 的妥協與略過。現在遭遇 `ConnectError` 或 `TimeoutException` 時，系統會視同潛在的異常殘留（如過載、堆疊異常），一律拋出 `GpuTransitionError` 並終止切換，達到「Fail Closed」的零容忍設計。
 - **Python 測試網路防線 (Python Socket Isolation)：** 釐清並修正了測試網路防線的定義，不再宣稱能阻擋 `curl` 等外部子程序。`conftest.py` 專注於封鎖當前 Python 程序中所有的 IPv4/IPv6 `socket.connect` 連線（包含 localhost），確保 Python 請求嚴格受控。
 - **回歸測試更新：** 測試案例已全面涵蓋同步 CLI 與非同步 Web 的連線失敗情境，並確保總計 **111 項測試** 全數通過。
+
+### 2026-09-13 Codex 正式簽核通過
+
+經過五輪的嚴格程式碼審查與測試防護強化，Codex 已於 2026-09-13 正式簽核通過所有安全性與穩定性修正。
+
+**下一階段：受控發布與實機驗收**
+- 將進行 Web / CLI 交錯實機測試。
+- 驗證真實環境下的 Ollama 與 Speaches ASR 多語音辨識、GPU 顯存切換狀態。
