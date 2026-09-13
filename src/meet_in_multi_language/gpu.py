@@ -120,8 +120,6 @@ def sync_get_loaded_ollama_models(ollama_url: str) -> set[str]:
             resp.raise_for_status()
             data = resp.json()
             return {m["name"] for m in data.get("models", [])}
-    except httpx.ConnectError:
-        return set()
     except Exception as err:
         raise GpuTransitionError(f"無法查詢 Ollama 載入狀態：{err}") from err
 
@@ -136,8 +134,6 @@ def sync_unload_ollama(ollama_url: str, model: str) -> None:
                 json={"model": model, "keep_alive": 0},
             )
             resp.raise_for_status()
-    except httpx.ConnectError:
-        pass
     except httpx.HTTPStatusError as err:
         if err.response.status_code != 404:
             raise GpuTransitionError(f"無法卸載 Ollama 模型 {model}：{err}") from err
@@ -217,8 +213,6 @@ class GpuWorkQueue:
                 response.raise_for_status()
                 data = response.json()
                 return {m["name"] for m in data.get("models", [])}
-        except httpx.ConnectError:
-            return set()
         except Exception as err:
             raise GpuTransitionError(f"無法查詢 Ollama 載入狀態：{err}") from err
 
@@ -233,9 +227,6 @@ class GpuWorkQueue:
                     json={"model": model, "keep_alive": 0},
                 )
                 response.raise_for_status()
-        except httpx.ConnectError:
-            # 服務未啟動時不可能有 Ollama 模型佔用顯存。
-            return
         except httpx.HTTPStatusError as error:
             if error.response.status_code == 404:
                 # 模型未在 Ollama 服務中載入或不存在，顯存中無此模型。
@@ -247,7 +238,7 @@ class GpuWorkQueue:
     async def unload_all_known_ollama_models(self, extra_model: str = "") -> None:
         """動態查詢並嘗試卸載所有 Ollama 模型，確保跨程序安全。
 
-        任何一個模型卸載失敗（非 ConnectError、非 404）時拋出 GpuTransitionError。
+        任何一個模型卸載失敗（非 404）時拋出 GpuTransitionError。
         """
         models_to_unload = await self._get_loaded_ollama_models()
         models_to_unload.update(self.known_ollama_models)
@@ -270,9 +261,6 @@ class GpuWorkQueue:
                 status_code = getattr(response, "status_code", 200)
                 if status_code not in (200, 204, 404):
                     response.raise_for_status()
-        except httpx.ConnectError:
-            # 服務未啟動時不可能有 Speaches 模型佔用顯存。
-            return
         except httpx.HTTPStatusError as error:
             if error.response.status_code in (404, 204):
                 # 模型未載入於 Speaches 顯存中或已成功釋放。

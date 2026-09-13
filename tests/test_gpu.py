@@ -52,8 +52,12 @@ def _make_queue(
         if isinstance(unload_speaches_side_effect, Exception):
             raise unload_speaches_side_effect
 
+    async def fake_get_loaded() -> set[str]:
+        return set()
+
     monkeypatch.setattr(queue, "unload_ollama", fake_unload_ollama)
     monkeypatch.setattr(queue, "unload_speaches", fake_unload_speaches)
+    monkeypatch.setattr(queue, "_get_loaded_ollama_models", fake_get_loaded)
     return queue
 
 
@@ -422,7 +426,7 @@ def test_speaches_unload_uses_encoded_model_id(
     ]
 
 
-def test_speaches_unload_tolerates_connect_error_and_404(
+def test_speaches_unload_tolerates_404(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import httpx
@@ -454,6 +458,12 @@ def test_speaches_unload_tolerates_connect_error_and_404(
     queue = GpuWorkQueue(speaches_url="http://speaches.test/v1")
     asyncio.run(queue.unload_speaches())
 
+
+def test_connect_error_aborts_web_and_cli(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import httpx
+
     class ClientConnectError:
         def __init__(self, **kwargs) -> None:
             pass
@@ -474,7 +484,19 @@ def test_speaches_unload_tolerates_connect_error_and_404(
             raise httpx.ConnectError("Connection refused")
 
     monkeypatch.setattr(gpu_module.httpx, "AsyncClient", ClientConnectError)
-    asyncio.run(queue.unload_speaches())
+    
+    # Web: Speaches 卸載發生 ConnectError 中止
+    queue = GpuWorkQueue(speaches_url="http://speaches.test/v1")
+    with pytest.raises(GpuTransitionError, match="Connection refused"):
+        asyncio.run(queue.unload_speaches())
+        
+    # Web: Ollama 模型探索發生 ConnectError 中止
+    with pytest.raises(GpuTransitionError, match="Connection refused"):
+        asyncio.run(queue._get_loaded_ollama_models())
+
+    # Web: Ollama 模型卸載發生 ConnectError 中止
+    with pytest.raises(GpuTransitionError, match="Connection refused"):
+        asyncio.run(queue.unload_ollama("test_model"))
 
 
 def test_speaches_unload_timeout_raises_and_releases_lock(
@@ -658,6 +680,38 @@ def test_get_loaded_ollama_models(monkeypatch: pytest.MonkeyPatch) -> None:
     queue = GpuWorkQueue("http://ollama.test")
     async_models = asyncio.run(queue._get_loaded_ollama_models())
     assert async_models == {"loaded3"}
+
+
+def test_sync_connect_error_aborts(monkeypatch: pytest.MonkeyPatch) -> None:
+    """測試同步查詢與卸載遇到 ConnectError 時會拋出 GpuTransitionError。"""
+    from meet_in_multi_language.gpu import sync_get_loaded_ollama_models, sync_unload_ollama
+    from meet_in_multi_language.pipeline import sync_unload_speaches
+    import httpx
+
+    class MockSyncConnectErrorClient:
+        def __init__(self, **kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def get(self, url):
+            raise httpx.ConnectError("Connection refused")
+        def post(self, url, json):
+            raise httpx.ConnectError("Connection refused")
+        def delete(self, url):
+            raise httpx.ConnectError("Connection refused")
+
+    monkeypatch.setattr(gpu_module.httpx, "Client", MockSyncConnectErrorClient)
+    # pipeline.py 也有自己的 httpx 導入，必須一起 mock
+    from meet_in_multi_language import pipeline as pipeline_module
+    monkeypatch.setattr(pipeline_module.httpx, "Client", MockSyncConnectErrorClient)
+
+    with pytest.raises(GpuTransitionError, match="Connection refused"):
+        sync_get_loaded_ollama_models("http://ollama.test")
+
+    with pytest.raises(GpuTransitionError, match="Connection refused"):
+        sync_unload_ollama("http://ollama.test", "test_model")
+
+    with pytest.raises(GpuTransitionError, match="Connection refused"):
+        sync_unload_speaches("http://speaches.test", "test_model")
 
 
 def test_sync_unload_all_loaded_ollama_models(monkeypatch: pytest.MonkeyPatch) -> None:

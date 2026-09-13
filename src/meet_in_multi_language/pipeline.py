@@ -78,8 +78,6 @@ def sync_unload_speaches(speaches_url: str, model: str) -> None:
             response = http_client.delete(f"{speaches_root}/api/ps/{encoded_model}")
             if response.status_code not in (200, 204, 404):
                 response.raise_for_status()
-    except httpx.ConnectError:
-        return
     except Exception as err:
         from .gpu import GpuTransitionError
 

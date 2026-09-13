@@ -2,7 +2,7 @@
 
 將含中文（暫指華語）、英語、日語、臺語的會議錄音，轉成可校訂、可回聽的逐字稿，以及可追溯來源的會議摘要與分析。
 
-狀態：P1 品質原型完成；P2 處理核心、P3 檢閱介面與 P4 交付成果（系統診斷工具 meet-eval doctor、調校指南 docs/tuning.md、82 分鐘長會議實機端到端批次壓測、單段快速校訂與草稿帶入）實作完成，105 項自動化測試全數通過。更新日期：2026-09-13。
+狀態：P1 品質原型完成；P2 處理核心、P3 檢閱介面與 P4 交付成果（系統診斷工具 meet-eval doctor、調校指南 docs/tuning.md、82 分鐘長會議實機端到端批次壓測、單段快速校訂與草稿帶入）實作完成，111 項自動化測試全數通過。更新日期：2026-09-13。
 
 
 目前實測主機基線：Ubuntu、46.9 GiB RAM、NVIDIA GeForce RTX 3050 8 GiB。其他專案文件中的 16 GB 紀錄已過期，不可沿用為本專案的資源判斷依據。
@@ -42,7 +42,7 @@ uv run uvicorn meet_in_multi_language.api:app --reload
 UV_CACHE_DIR=/tmp/ai-meet-uv-cache uv run pytest
 ```
 
-目前共有 105 項自動化測試，涵蓋主機跨行程 GPU 互斥與模型精確卸載／切換、外部連線測試防線、原始稿不可變與一致性、儲存層路徑穿越與 symlink 防護、多程序原子存取、音訊 Range Request (206/416)、服務端點契約與防重、摘要證據引用正規化驗證、長稿分層摘要及段落結構保留之人工校訂版本。
+目前共有 111 項自動化測試，涵蓋主機跨行程 GPU 互斥與模型精確卸載／切換、外部連線測試防線、原始稿不可變與一致性、儲存層路徑穿越與 symlink 防護、多程序原子存取、音訊 Range Request (206/416)、服務端點契約與防重、摘要證據引用正規化驗證、長稿分層摘要及段落結構保留之人工校訂版本。
 
 
 評測資料、真實錄音、金鑰與執行結果（`var/`）皆在 `.gitignore` 排除範圍內，**嚴禁提交至 Git**。
@@ -403,7 +403,7 @@ LLM 的臺語同音字校正只能產生「校正版」，不得覆蓋 ASR 原�
 - 端到端批次處理 CLI：實作 `meet-eval pipeline` 與 Python 模組 `run_pipeline`，一鍵完成長音訊切段、斷點續跑轉錄、Ollama 摘要與 5 種格式匯出；支援 `num_ctx: 24576` 容納完整長逐字稿。
 - 系統相依性檢查工具：實作 `meet-eval doctor`，一鍵自動探測作業系統、RAM、RTX 3050 顯存狀態、ffmpeg 工具鏈、Speaches/Breeze 與 Ollama 模型就緒度。
 - 健康端點會實際探測 Speaches 與 Ollama；API 摘要端點加入 409 處理中防重；非同步 HTTP client 與轉錄器已加入關閉處理。
-- 指定測試指令目前為 **105 項全數通過**，Python `compileall`、JavaScript `node --check` 與 `git diff --check` 皆通過。
+- 指定測試指令目前為 **111 項全數通過**，Python `compileall`、JavaScript `node --check` 與 `git diff --check` 皆通過。
 
 接手後優先事項：
 
@@ -414,7 +414,7 @@ LLM 的臺語同音字校正只能產生「校正版」，不得覆蓋 ASR 原�
 
 ### 2026-09-13 Codex 程式碼審查交接工作
 
-目前版本已通過 105 項自動化測試，已全數落實 Codex 審查提出的安全性、測試隔離與實機穩定度修正：
+目前版本已通過 111 項自動化測試，已全數落實 Codex 審查提出的安全性、測試隔離與實機穩定度修正：
 
 #### P0：簽核前必須修正
 
@@ -437,7 +437,7 @@ LLM 的臺語同音字校正只能產生「校正版」，不得覆蓋 ASR 原�
 - [x] **音訊 Range Request 正式測試**：在 `test_api.py` 中增加音訊 Range Request 測試，驗證有效範圍回傳 206 與正確 `Content-Range`，無效範圍回傳 416。
 - [x] **改善 `meet-eval doctor` 記憶體判定**：當可用記憶體不足 2.0 GiB 時顯示 warning 與警告說明，避免大記憶體主機在可用 RAM 極低時誤判正常。
 - [x] **統一臺灣繁體中文用詞**：已統一為臺灣繁體中文及臺灣資訊科技慣用詞。
-- [x] **修正文件測試數量不一致**：同步 README 測試數量為 105 項。
+- [x] **修正文件測試數量不一致**：同步 README 測試數量為 111 項。
 - [x] **若匯出 API 指定不存在的 `revision_id`，回傳 404**：`export_payload` 找不到指定版本時拋出 `RevisionNotFoundError`，API 回傳 404 而非靜默 fallback。
 
 
@@ -452,7 +452,7 @@ LLM 的臺語同音字校正只能產生「校正版」，不得覆蓋 ASR 原�
 
 ### 2026-09-13 Codex 修正複查結果（commit `a34ae49`）
 
-整體結論：**暫不同意正式簽核 `a34ae49`**。105 項自動化測試與靜態檢查雖全數通過，多數原審查項目亦已改善，但仍有一項高風險 GPU 跨程序模型切換缺陷，以及數項 API、測試隔離與資料結構邊界尚未完整落實。
+整體結論：**暫不同意正式簽核 `a34ae49`**。111 項自動化測試與靜態檢查雖全數通過，多數原審查項目亦已改善，但仍有一項高風險 GPU 跨程序模型切換缺陷，以及數項 API、測試隔離與資料結構邊界尚未完整落實。
 
 #### 驗證結果
 
@@ -479,7 +479,7 @@ LLM 的臺語同音字校正只能產生「校正版」，不得覆蓋 ASR 原�
 - [x] **P2-1 Range Request 測試**：已覆蓋 206、`Content-Range`、內容切片與 416。
 - [x] **P2-2 doctor 記憶體判定**：可用記憶體低於 2.0 GiB 時會顯示 warning。
 - [x] **P2-3 臺灣繁體中文用詞（部分完成）**：功能文字已修正，但 README 的較早完成說明仍直接列出兩個非臺灣慣用詞作為修改前後對照；應改成不重現禁用詞的敘述。
-- [x] **P2-4 文件測試數量**：已全面同步為 105 項。
+- [x] **P2-4 文件測試數量**：已全面同步為 111 項。
 - [x] **P2-5 不存在的匯出版本**：會拋出 `RevisionNotFoundError`，API 回傳 404。
 
 #### 下一步修正建議
@@ -508,7 +508,7 @@ LLM 的臺語同音字校正只能產生「校正版」，不得覆蓋 ASR 原�
 
 ### 2026-09-13 AGY 最終修正紀錄
 
-專案內包含 7 項 Codex 提出的修正複查項目皆已由 AGY 全數落實，並將總測試數擴增至 105 項，所有自動化測試與靜態語法檢查皆 100% 通過。
+專案內包含 7 項 Codex 提出的修正複查項目皆已由 AGY 全數落實，並將總測試數擴增至 111 項，所有自動化測試與靜態語法檢查皆 100% 通過。
 
 #### 修正摘要
 1. **GPU 模型切換安全**：移除程序歷史狀態依賴，改採「每次無條件確認或嘗試卸載衝突模型」的嚴格跨程序保護機制。
@@ -523,7 +523,15 @@ LLM 的臺語同音字校正只能產生「校正版」，不得覆蓋 ASR 原�
 
 在修正 Codex 第三輪提出的拒絕簽核問題後，系統的安全性與隔離性達到最終標準：
 
-- **完全網路隔離 (Network Isolation)：** `conftest.py` 現在預設拒絕所有 IPv4/IPv6 網路連線（包含 localhost），確保 `subprocess.run(curl)` 與非同步套件皆無法不慎存取本機服務。需要本機連線的 IPC 測試必須明確套用 `allow_local_socket`。
+- **Python 測試網路防線 (Python Socket Isolation)：** `conftest.py` 現在預設拒絕當前 Python 程序中所有的 IPv4/IPv6 `socket.connect` 連線（包含 localhost），確保 Python HTTP 請求與非同步套件皆無法不慎存取真實本機服務。請注意，此機制僅攔截 Python 原生 socket，無法阻擋子程序 (如 curl) 之外連。需要本機連線的 IPC 測試必須明確套用 `allow_local_socket`。
 - **動態 GPU 模型發掘 (Dynamic Model Discovery)：** Web 服務與 CLI 的 GPU 卸載機制不再依賴寫死（hardcoded）的 `KNOWN_OLLAMA_MODELS`。程式會在每次載入新模型前呼叫 Ollama `/api/ps` 端點動態取得實際佔用顯存的模型列表，結合預設備援名單與本次請求模型，徹底消除自訂模型殘留或程序崩潰造成的顯存洩漏風險。
 - **穩健的 GPU 同步守護 (Robust GPU Sync Guards)：** 針對 CLI 在程序啟動時的 Ollama 卸載需求，實作了具備 HTTP 500、連線逾時處理及 404 容忍機制的同步守門員（sync guard）。無論在何處，只要卸載失敗即刻拋出 `GpuTransitionError` 中止後續工作，徹底防堵 OOM （Out of Memory）骨牌效應。
 - **多程序測試強化 (Multiprocess Test Hardening)：** 修正 `test_multiprocess_storage.py` 多程序測試死鎖，導入 `apply_async().get(timeout=10)` 與中止保護。
+
+### 2026-09-13 Codex 第四輪修正複查結果（未發布提交）
+
+在修正 Codex 第四輪提出的拒絕簽核問題後，系統的連線隔離防護與失敗中斷機制已達最高標準：
+
+- **嚴格的 ConnectError 防護：** 全面移除了 GPU 切換（包含 Ollama 探索、Ollama 卸載、Speaches 卸載）中對 `ConnectError` 的妥協與略過。現在遭遇 `ConnectError` 或 `TimeoutException` 時，系統會視同潛在的異常殘留（如過載、堆疊異常），一律拋出 `GpuTransitionError` 並終止切換，達到「Fail Closed」的零容忍設計。
+- **Python 測試網路防線 (Python Socket Isolation)：** 釐清並修正了測試網路防線的定義，不再宣稱能阻擋 `curl` 等外部子程序。`conftest.py` 專注於封鎖當前 Python 程序中所有的 IPv4/IPv6 `socket.connect` 連線（包含 localhost），確保 Python 請求嚴格受控。
+- **回歸測試更新：** 測試案例已全面涵蓋同步 CLI 與非同步 Web 的連線失敗情境，並確保總計 **111 項測試** 全數通過。
