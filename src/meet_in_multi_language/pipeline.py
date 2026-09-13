@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+from contextlib import nullcontext
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -12,6 +13,7 @@ import httpx
 from .audio import prepare_audio_chunks, probe_audio, sha256_file
 from .batch import transcribe_manifest
 from .export import ExportFormat, export_payload
+from .gpu import host_gpu_lock
 from .models import (
     Engine,
     EvaluationRun,
@@ -67,6 +69,25 @@ def _ensure_single_chunk_manifest(audio_path: Path, output_dir: Path) -> Path:
     return manifest_path
 
 
+def sync_unload_speaches(speaches_url: str, model: str) -> None:
+    """以同步 HTTP DELETE 通知 Speaches 卸載模型以釋出顯存。"""
+    speaches_root = speaches_url.removesuffix("/v1")
+    encoded_model = quote(model, safe="")
+    try:
+        with httpx.Client(timeout=5.0) as http_client:
+            response = http_client.delete(f"{speaches_root}/api/ps/{encoded_model}")
+            if response.status_code not in (200, 204, 404):
+                response.raise_for_status()
+    except httpx.ConnectError:
+        return
+    except Exception as err:
+        from .gpu import GpuTransitionError
+
+        raise GpuTransitionError(
+            f"無法卸載 Speaches 模型 {model}，中止後續摘要避免顯存溢出：{err}"
+        ) from err
+
+
 def run_pipeline(
     source_audio: Path,
     output_dir: Path,
@@ -81,6 +102,8 @@ def run_pipeline(
     force: bool = False,
     transcriber: Any | None = None,
     ollama_client: Any | None = None,
+    speaches_unloader: Any | None = None,
+    gpu_lock_file: Path | str | None = None,
 ) -> dict[str, Any]:
     """端到端批次處理管線：音訊切段、斷點續轉、時間軸對齊、結構化摘要與多格式匯出。"""
     if not source_audio.is_file():
@@ -104,64 +127,75 @@ def run_pipeline(
         manifest_data = json.loads(manifest_path.read_text(encoding="utf-8"))
         total_chunks = 1
 
-    # 2. 轉錄處理
-    if transcriber is None:
-        if engine == "breeze":
-            profile = PROFILES["breeze"]
-            transcriber = SpeachesTranscriber(speaches_url, profile)
-        else:
-            api_key = openai_api_key or os.getenv("OPENAI_API_KEY", "")
-            if not api_key:
-                raise ValueError(f"使用 {engine} 需要提供 OPENAI_API_KEY")
-            transcriber = OpenAITranscriber(api_key)
+    # 2. 轉錄處理與 3. 摘要處理（受主機級跨行程 GPU 互斥鎖保護）
+    requires_gpu = (engine == "breeze") or bool(summary_model)
+    gpu_ctx = host_gpu_lock(gpu_lock_file) if requires_gpu else nullcontext()
 
-    def _pipeline_progress(idx: int, total: int, c_id: str, cached: bool) -> None:
-        tag = "[快取]" if cached else "[處理]"
-        print(f"  {tag} 切段轉錄進度 ({idx}/{total})：{c_id}")
-
-    transcribe_result = transcribe_manifest(
-        manifest_path,
-        output_dir,
-        engine,
-        transcriber,
-        keywords=keywords or [],
-        force=force,
-        progress_callback=_pipeline_progress,
-    )
-    transcript_data = transcribe_result["transcript"]
-    assert isinstance(transcript_data, dict)
-    transcript_result = TranscriptResult.model_validate(transcript_data)
-
-    # 3. 摘要處理
     summary_result: SummaryResult | None = None
     summary_path: Path | None = None
-    if summary_model:
-        # 若使用 Breeze ASR，轉錄完成後主動卸載以釋放顯存供 Ollama 摘要使用
-        if engine == "breeze":
-            try:
-                speaches_root = speaches_url.removesuffix("/v1")
-                encoded_model = quote(PROFILES["breeze"].model, safe="")
-                with httpx.Client(timeout=5.0) as http_client:
-                    http_client.delete(f"{speaches_root}/api/ps/{encoded_model}")
-            except Exception:
-                pass
 
-        client = ollama_client or OllamaClient(ollama_url)
-        formatted_transcript = format_transcript_for_summary(transcript_result)
-        summary_raw = client.summarize(summary_model, formatted_transcript, keep_alive=0)
-        content = summary_raw.get("message", {}).get("content", "")
-        validation = validate_summary(content, formatted_transcript)
-        if not validation["schema_valid"]:
-            raise ValueError(f"摘要結果不符合結構契約：{validation.get('error')}")
-        summary_result = parse_summary_payload(
-            content,
-            model=summary_model,
-            source_revision_id=transcript_result.revision_id,
+    with gpu_ctx:
+        if transcriber is None:
+            if engine == "breeze":
+                profile = PROFILES["breeze"]
+                transcriber = SpeachesTranscriber(speaches_url, profile)
+            else:
+                api_key = openai_api_key or os.getenv("OPENAI_API_KEY", "")
+                if not api_key:
+                    raise ValueError(f"使用 {engine} 需要提供 OPENAI_API_KEY")
+                transcriber = OpenAITranscriber(api_key)
+
+        def _pipeline_progress(idx: int, total: int, c_id: str, cached: bool) -> None:
+            tag = "[快取]" if cached else "[處理]"
+            print(f"  {tag} 切段轉錄進度 ({idx}/{total})：{c_id}")
+
+        transcribe_result = transcribe_manifest(
+            manifest_path,
+            output_dir,
+            engine,
+            transcriber,
+            keywords=keywords or [],
+            force=force,
+            progress_callback=_pipeline_progress,
         )
-        summary_path = output_dir / "summary.json"
-        summary_path.write_text(
-            summary_result.model_dump_json(indent=2) + "\n", encoding="utf-8"
-        )
+        transcript_data = transcribe_result["transcript"]
+        assert isinstance(transcript_data, dict)
+        transcript_result = TranscriptResult.model_validate(transcript_data)
+
+        # 3. 摘要處理
+        if summary_model:
+            # 若使用 Breeze ASR，轉錄完成後主動卸載以釋放顯存供 Ollama 摘要使用
+            if engine == "breeze":
+                unloader = speaches_unloader or sync_unload_speaches
+                unloader(speaches_url, PROFILES["breeze"].model)
+
+            client = ollama_client or OllamaClient(ollama_url)
+            formatted_transcript = format_transcript_for_summary(transcript_result)
+            summary_raw = client.summarize(
+                summary_model, formatted_transcript, keep_alive=0, num_ctx=24576
+            )
+            content = summary_raw.get("message", {}).get("content", "")
+            validation = validate_summary(content, formatted_transcript)
+            if not validation["schema_valid"]:
+                raise ValueError(f"摘要結果不符合結構契約：{validation.get('error')}")
+            if validation["unknown_evidence_ids"]:
+                raise ValueError(
+                    f"摘要包含未知的段落引用識別碼：{validation['unknown_evidence_ids']}"
+                )
+            if validation["forbidden_terms"]:
+                raise ValueError(
+                    f"摘要包含非臺灣慣用詞彙：{validation['forbidden_terms']}"
+                )
+            summary_result = parse_summary_payload(
+                content,
+                model=summary_model,
+                source_revision_id=transcript_result.revision_id,
+            )
+            summary_path = output_dir / "summary.json"
+            summary_path.write_text(
+                summary_result.model_dump_json(indent=2) + "\n", encoding="utf-8"
+            )
+
 
     # 4. 多格式匯出
     formats_to_export = export_formats or ["txt", "srt", "vtt", "md", "json"]

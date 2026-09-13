@@ -112,13 +112,13 @@ function renderSegments(segments, runId) {
     const seqNum = index + 1;
     const timeStr = seg.start_ms != null ? formatMs(seg.start_ms) : "";
     const timeButton = timeStr ? `
-      <button type="button" class="segment-time-btn" title="點擊跳轉播放此段落" onclick="playAudioAt('${escapeHtml(runId)}', ${seg.start_ms || 0}, '${escapeHtml(seg.segment_id)}')">
+      <button type="button" class="segment-time-btn" title="點擊跳轉播放此段落" data-action="play-segment" data-run-id="${escapeHtml(runId)}" data-start-ms="${seg.start_ms || 0}" data-seg-id="${escapeHtml(seg.segment_id)}">
         ▶ ${escapeHtml(timeStr)}
       </button>
     ` : "";
     const rawSpeaker = seg.speaker || "";
     const speakerHtml = rawSpeaker ? `
-      <span class="speaker-tag" title="點擊更名此講者" onclick="openRenameSpeakerModal('${escapeHtml(runId)}', '${escapeHtml(rawSpeaker)}')">[${escapeHtml(rawSpeaker)}]</span>
+      <span class="speaker-tag" role="button" tabindex="0" title="點擊更名此講者" data-action="open-rename-speaker" data-run-id="${escapeHtml(runId)}" data-speaker="${escapeHtml(rawSpeaker)}">[${escapeHtml(rawSpeaker)}]</span>
     ` : "";
     const flagsHtml = (seg.quality_flags || []).map(f => `<span class="quality-flag" title="品質警示">${escapeHtml(f)}</span>`).join("");
     const startMs = seg.start_ms != null ? seg.start_ms : "";
@@ -136,8 +136,8 @@ function renderSegments(segments, runId) {
         <div class="inline-edit-controls">
           <label class="hint">講者：</label>
           <input type="text" id="inline-spk-${escapeHtml(runId)}-${escapeHtml(seg.segment_id)}" value="${escapeHtml(editState.speaker)}" placeholder="講者名稱" />
-          <button type="button" class="small" id="submit-inline-${escapeHtml(runId)}-${escapeHtml(seg.segment_id)}" onclick="submitSegmentEdit('${escapeHtml(runId)}', '${escapeHtml(seg.segment_id)}')">儲存校訂</button>
-          <button type="button" class="small secondary" onclick="toggleSegmentEdit('${escapeHtml(runId)}', '${escapeHtml(seg.segment_id)}')">取消</button>
+          <button type="button" class="small" id="submit-inline-${escapeHtml(runId)}-${escapeHtml(seg.segment_id)}" data-action="submit-segment-edit" data-run-id="${escapeHtml(runId)}" data-seg-id="${escapeHtml(seg.segment_id)}">儲存校訂</button>
+          <button type="button" class="small secondary" data-action="toggle-segment-edit" data-run-id="${escapeHtml(runId)}" data-seg-id="${escapeHtml(seg.segment_id)}">取消</button>
         </div>
       </div>
     ` : "";
@@ -152,8 +152,8 @@ function renderSegments(segments, runId) {
         <span class="segment-text">${escapeHtml(seg.text)}</span>
         ${flagsHtml}
         <span class="segment-actions">
-          <button type="button" class="segment-action-btn" title="快速校訂此段文字" onclick="toggleSegmentEdit('${escapeHtml(runId)}', '${escapeHtml(seg.segment_id)}')">✏️ 校訂</button>
-          <button type="button" class="segment-action-btn" title="帶入此段文字至全篇校訂草稿" onclick="copySegmentToDraft('${escapeHtml(runId)}', '${escapeHtml(seg.text)}')">📋 帶入草稿</button>
+          <button type="button" class="segment-action-btn" title="快速校訂此段文字" data-action="toggle-segment-edit" data-run-id="${escapeHtml(runId)}" data-seg-id="${escapeHtml(seg.segment_id)}">✏️ 校訂</button>
+          <button type="button" class="segment-action-btn" title="帶入此段文字至全篇校訂草稿" data-action="copy-to-draft" data-run-id="${escapeHtml(runId)}">📋 帶入草稿</button>
         </span>
         ${inlineEditHtml}
       </div>
@@ -167,7 +167,7 @@ function renderSummary(summary, runId) {
       <div class="summary-container">
         <div class="summary-header">
           <h4>會議摘要分析</h4>
-          <button type="button" class="small secondary" onclick="triggerSummary('${runId}')">立即以 Ollama 產生摘要</button>
+          <button type="button" class="small secondary" data-action="trigger-summary" data-run-id="${escapeHtml(runId)}">立即以 Ollama 產生摘要</button>
         </div>
         <p class="hint">尚未產生摘要。點擊上方按鈕以 Ollama 進行繁體中文結構化摘要與證據提取。</p>
       </div>
@@ -208,7 +208,7 @@ function renderSummary(summary, runId) {
     <div class="summary-container">
       <div class="summary-header">
         <h4>會議摘要與分析（模型：${escapeHtml(summary.model)}）</h4>
-        <button type="button" class="small secondary" onclick="triggerSummary('${runId}')">重新產生摘要</button>
+        <button type="button" class="small secondary" data-action="trigger-summary" data-run-id="${escapeHtml(runId)}">重新產生摘要</button>
       </div>
       <div class="summary-overview">
         <strong>總覽：</strong>${escapeHtml(summary.overview)}
@@ -224,8 +224,8 @@ function renderSummary(summary, runId) {
 window.highlightSegment = function(runId, segId) {
   const card = document.getElementById(`run-card-${runId}`);
   if (!card) return;
-  const targetId = segId.replace(/^\[+|\]+$/g, "");
-  // 嘗試匹配 seg-001、segment-1 或跨切段序號
+  const targetId = String(segId).replace(/^\[+|\]+$/g, "");
+  // 嘗試匹配 seg-001、segment-1 或跨切段序號，完全使用 dataset 比對避免 selector 注入
   const segmentRows = Array.from(card.querySelectorAll(".segment-row"));
   let el = segmentRows.find(row => row.dataset.segId === targetId);
   if (!el) {
@@ -239,7 +239,7 @@ window.highlightSegment = function(runId, segId) {
     }
   }
   if (el) {
-    card.querySelectorAll(".segment-row").forEach(r => r.classList.remove("highlighted"));
+    segmentRows.forEach(r => r.classList.remove("highlighted"));
     el.classList.add("highlighted");
     el.scrollIntoView({ behavior: "smooth", block: "nearest" });
 
@@ -288,7 +288,7 @@ window.triggerSummary = async function(runId) {
   const body = new FormData();
   body.append("model", model);
   try {
-    const response = await fetch(`/api/runs/${runId}/summary`, { method: "POST", body });
+    const response = await fetch(`/api/runs/${encodeURIComponent(runId)}/summary`, { method: "POST", body });
     if (!response.ok) {
       alert(`要求摘要失敗：${await readError(response)}`);
     } else {
@@ -305,7 +305,7 @@ window.triggerExport = function(runId) {
   const revId = selectedRevisionPerRun[runId] || "";
   const query = new URLSearchParams({ format: fmt });
   if (revId) query.set("revision_id", revId);
-  window.open(`/api/runs/${runId}/export?${query.toString()}`, "_blank");
+  window.open(`/api/runs/${encodeURIComponent(runId)}/export?${query.toString()}`, "_blank");
 };
 
 const openCorrectionPanels = new Set();
@@ -346,7 +346,7 @@ window.submitCorrection = async function(runId) {
   const sourceRevisionId = selectedRevisionPerRun[runId];
   if (sourceRevisionId) body.append("source_revision_id", sourceRevisionId);
   try {
-    const response = await fetch(`/api/runs/${runId}/revisions/correct`, { method: "POST", body });
+    const response = await fetch(`/api/runs/${encodeURIComponent(runId)}/revisions/correct`, { method: "POST", body });
     if (!response.ok) {
       alert(`新增校訂版本失敗：${await readError(response)}`);
       if (submitBtn) submitBtn.disabled = false;
@@ -399,7 +399,7 @@ window.submitRenameSpeaker = async function(runId) {
   if (sourceRevisionId) body.append("source_revision_id", sourceRevisionId);
 
   try {
-    const response = await fetch(`/api/runs/${runId}/speakers/rename`, { method: "POST", body });
+    const response = await fetch(`/api/runs/${encodeURIComponent(runId)}/speakers/rename`, { method: "POST", body });
     if (!response.ok) {
       alert(`更名失敗：${await readError(response)}`);
       if (submitBtn) submitBtn.disabled = false;
@@ -419,7 +419,7 @@ window.deleteRun = async function(runId, filename) {
     return;
   }
   try {
-    const response = await fetch(`/api/runs/${runId}`, { method: "DELETE" });
+    const response = await fetch(`/api/runs/${encodeURIComponent(runId)}`, { method: "DELETE" });
     if (!response.ok) {
       alert(`刪除失敗：${await readError(response)}`);
     } else {
@@ -489,7 +489,8 @@ window.toggleSegmentEdit = function(runId, segId) {
     delete openSegmentEdits[key];
   } else {
     const card = document.getElementById(`run-card-${runId}`);
-    const row = card ? card.querySelector(`.segment-row[data-seg-id="${segId}"]`) : null;
+    const rows = card ? Array.from(card.querySelectorAll(".segment-row")) : [];
+    const row = rows.find(r => r.dataset.segId === segId);
     const textNode = row ? row.querySelector(".segment-text") : null;
     const spkNode = row ? row.querySelector(".speaker-tag") : null;
     const text = textNode ? textNode.textContent.trim() : "";
@@ -518,7 +519,7 @@ window.submitSegmentEdit = async function(runId, segId) {
   if (currentRevId) formData.append("source_revision_id", currentRevId);
 
   try {
-    const response = await fetch(`/api/runs/${runId}/segments/${encodeURIComponent(segId)}/correct`, {
+    const response = await fetch(`/api/runs/${encodeURIComponent(runId)}/segments/${encodeURIComponent(segId)}/correct`, {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: formData.toString(),
@@ -540,83 +541,76 @@ window.submitSegmentEdit = async function(runId, segId) {
   }
 };
 
-window.switchRevision = function(runId, revisionId) {
-  selectedRevisionPerRun[runId] = revisionId;
-  delete correctionDrafts[runId];
+window.switchRevision = function(runId, revId) {
+  selectedRevisionPerRun[runId] = revId;
   loadRuns();
 };
 
 async function loadRuns() {
-  let activeInputId = null;
-  let selStart = null;
-  let selEnd = null;
-  if (
-    document.activeElement &&
-    (document.activeElement.tagName === "TEXTAREA" || document.activeElement.tagName === "INPUT") &&
-    document.activeElement.id &&
-    (
-      document.activeElement.id.startsWith("correction-text-") ||
-      document.activeElement.id.startsWith("rename-") ||
-      document.activeElement.id.startsWith("search-input-") ||
-      document.activeElement.id.startsWith("inline-")
-    )
-  ) {
-    activeInputId = document.activeElement.id;
-    selStart = document.activeElement.selectionStart;
-    selEnd = document.activeElement.selectionEnd;
-  }
+  const activeEl = document.activeElement;
+  const activeInputId = activeEl ? activeEl.id : null;
+  const selStart = activeEl && typeof activeEl.selectionStart === "number" ? activeEl.selectionStart : null;
+  const selEnd = activeEl && typeof activeEl.selectionEnd === "number" ? activeEl.selectionEnd : null;
 
   const playingStates = {};
-  document.querySelectorAll("audio[id^='audio-player-']").forEach(player => {
-    const rId = player.id.replace("audio-player-", "");
-    playingStates[rId] = {
-      paused: player.paused,
-      currentTime: player.currentTime,
-    };
+  document.querySelectorAll("audio").forEach(a => {
+    const rId = a.id.replace("audio-player-", "");
+    if (rId) {
+      playingStates[rId] = { currentTime: a.currentTime, paused: a.paused };
+    }
   });
 
-  let runs;
   try {
     const response = await fetch("/api/runs");
-    if (!response.ok) throw new Error("伺服器回應錯誤");
-    runs = await response.json();
-  } catch (error) {
-    runList.innerHTML = `<p class="error">無法取得工作紀錄：${escapeHtml(error.message)}</p>`;
-    return;
+    if (!response.ok) throw new Error("載入工作失敗");
+    const runs = await response.json();
+    renderRuns(runs, activeInputId, selStart, selEnd, playingStates);
+  } catch (err) {
+    runList.innerHTML = `<p class="status error">載入清單時發生錯誤：${escapeHtml(err.message)}</p>`;
   }
+}
+
+function renderRuns(runs, activeInputId, selStart, selEnd, playingStates) {
   if (!runs.length) {
-    runList.innerHTML = "<p>目前尚無轉錄工作。請從上方上傳錄音檔案。</p>";
+    runList.innerHTML = "<p>目前尚未有轉錄工作紀錄。</p>";
     return;
   }
 
-  runList.innerHTML = runs.map((run) => {
-    const revisions = run.revisions || (run.result ? [run.result] : []);
-    const selectedRevId = selectedRevisionPerRun[run.run_id] || (run.result?.revision_id) || (run.raw_asr?.revision_id);
-    const currentRev = revisions.find(r => r.revision_id === selectedRevId) || run.result || run.raw_asr;
+  runList.innerHTML = runs.map(run => {
+    const revisions = (run.result && run.result.revisions) || [];
+    let currentRev = null;
+    if (revisions.length > 0) {
+      const savedRevId = selectedRevisionPerRun[run.run_id];
+      currentRev = revisions.find(r => r.revision_id === savedRevId) || revisions[revisions.length - 1];
+      selectedRevisionPerRun[run.run_id] = currentRev.revision_id;
+    }
 
     const revisionOptionsHtml = revisions.map(r => {
-      const isRaw = r.revision_kind === "raw_asr";
-      const isLlm = r.revision_kind === "llm_corrected";
-      const kindLabel = isRaw ? "原始 ASR (raw_asr)" : (isLlm ? "LLM 校訂版" : "人工校正");
-      const selectedAttr = r.revision_id === currentRev?.revision_id ? "selected" : "";
-      return `<option value="${escapeHtml(r.revision_id)}" ${selectedAttr}>${kindLabel} - ${escapeHtml(r.revision_id)}</option>`;
+      const isSelected = currentRev && r.revision_id === currentRev.revision_id;
+      const label = r.revision_kind === "raw_asr"
+        ? `版本 #${r.revision_number} (原始 ASR - ${r.revision_id})`
+        : `版本 #${r.revision_number} (${r.description || r.revision_kind} - ${r.revision_id})`;
+      return `<option value="${escapeHtml(r.revision_id)}" ${isSelected ? "selected" : ""}>${escapeHtml(label)}</option>`;
     }).join("");
 
     const isPanelOpen = openCorrectionPanels.has(run.run_id);
-    const isRenameOpen = openRenamePanels.has(run.run_id);
-    const draftText = correctionDrafts[run.run_id] !== undefined ? correctionDrafts[run.run_id] : currentRev?.text || "";
+    const draftText = correctionDrafts[run.run_id] != null
+      ? correctionDrafts[run.run_id]
+      : (currentRev ? currentRev.segments.map(s => s.text).join("\n") : "");
 
-    const uniqueSpeakers = Array.from(
-      new Set((currentRev?.segments || []).map(s => s.speaker).filter(Boolean))
-    );
-    const filterState = filterStatePerRun[run.run_id] || { keyword: "", speaker: "", onlyFlagged: false };
+    const isRenameOpen = openRenamePanels.has(run.run_id);
+
+    const filterState = filterStatePerRun[run.run_id] || {};
+    const allSegments = currentRev ? currentRev.segments : [];
+    const uniqueSpeakers = Array.from(new Set(allSegments.map(s => s.speaker).filter(Boolean)));
 
     return `
       <article class="run-card" id="run-card-${escapeHtml(run.run_id)}">
-        <div class="card-header">
+        <div class="run-header">
           <div>
-            <h3 class="card-title">${escapeHtml(run.original_filename)}</h3>
-            <p class="meta">
+            <h3>${escapeHtml(run.original_filename)}</h3>
+            <p class="hint">
+              工作 ID：<code>${escapeHtml(run.run_id)}</code> ·
               引擎：${escapeHtml(engineLabels[run.engine] || run.engine)} ·
               建立於：${new Date(run.created_at).toLocaleString("zh-TW", { hour12: false })}
             </p>
@@ -625,14 +619,14 @@ async function loadRuns() {
             <span class="status-pill ${escapeHtml(run.status)}">
               ${escapeHtml(statusLabels[run.status] || run.status)}
             </span>
-            <button type="button" class="small danger-outline" title="刪除這筆工作紀錄與音訊" onclick="deleteRun('${escapeHtml(run.run_id)}', '${escapeHtml(run.original_filename)}')">刪除</button>
+            <button type="button" class="small danger-outline" title="刪除這筆工作紀錄與音訊" data-action="delete-run" data-run-id="${escapeHtml(run.run_id)}" data-filename="${escapeHtml(run.original_filename)}">刪除</button>
           </div>
         </div>
 
         ${run.stored_filename ? `
           <div class="audio-player-wrapper">
             <span class="player-label">音訊回聽：</span>
-            <audio id="audio-player-${escapeHtml(run.run_id)}" controls preload="metadata" src="/api/runs/${escapeHtml(run.run_id)}/audio" ontimeupdate="onAudioTimeUpdate('${escapeHtml(run.run_id)}', this.currentTime)"></audio>
+            <audio id="audio-player-${escapeHtml(run.run_id)}" class="audio-player" data-run-id="${escapeHtml(run.run_id)}" controls preload="metadata" src="/api/runs/${escapeHtml(run.run_id)}/audio"></audio>
           </div>
         ` : ""}
 
@@ -642,14 +636,14 @@ async function loadRuns() {
           <div class="revision-toolbar">
             <div class="revision-selector-group">
               <label><strong>逐字稿版本：</strong></label>
-              <select onchange="switchRevision('${escapeHtml(run.run_id)}', this.value)">
+              <select class="revision-select" data-run-id="${escapeHtml(run.run_id)}">
                 ${revisionOptionsHtml}
               </select>
               ${currentRev.revision_kind === "raw_asr" ? `<span class="raw-badge" title="受保護版本，不可覆蓋">原始稿 (raw_asr)</span>` : ""}
             </div>
             <div class="revision-actions">
-              <button type="button" class="small secondary" onclick="toggleRenamePanel('${escapeHtml(run.run_id)}')">更名講者</button>
-              <button type="button" class="small secondary" onclick="toggleCorrectionPanel('${escapeHtml(run.run_id)}')">文字校訂</button>
+              <button type="button" class="small secondary" data-action="toggle-rename-panel" data-run-id="${escapeHtml(run.run_id)}">更名講者</button>
+              <button type="button" class="small secondary" data-action="toggle-correction-panel" data-run-id="${escapeHtml(run.run_id)}">文字校訂</button>
               <div class="export-group">
                 <select id="export-format-${escapeHtml(run.run_id)}">
                   <option value="txt">純文字 (.txt)</option>
@@ -658,7 +652,7 @@ async function loadRuns() {
                   <option value="md">會議報告 (.md)</option>
                   <option value="json">結構資料 (.json)</option>
                 </select>
-                <button type="button" class="small" onclick="triggerExport('${escapeHtml(run.run_id)}')">匯出下載</button>
+                <button type="button" class="small" data-action="trigger-export" data-run-id="${escapeHtml(run.run_id)}">匯出下載</button>
               </div>
             </div>
           </div>
@@ -675,31 +669,31 @@ async function loadRuns() {
                 <input type="text" id="rename-new-${escapeHtml(run.run_id)}" placeholder="例如 主席 或 王經理" />
               </div>
               <div>
-                <button type="button" class="small" id="submit-rename-${escapeHtml(run.run_id)}" onclick="submitRenameSpeaker('${escapeHtml(run.run_id)}')">確認更名</button>
-                <button type="button" class="small secondary" onclick="toggleRenamePanel('${escapeHtml(run.run_id)}')">取消</button>
+                <button type="button" class="small" id="submit-rename-${escapeHtml(run.run_id)}" data-action="submit-rename-speaker" data-run-id="${escapeHtml(run.run_id)}">確認更名</button>
+                <button type="button" class="small secondary" data-action="toggle-rename-panel" data-run-id="${escapeHtml(run.run_id)}">取消</button>
               </div>
             </div>
           </div>
 
           <div class="correct-modal" id="correction-panel-${escapeHtml(run.run_id)}" style="display: ${isPanelOpen ? 'grid' : 'none'};">
             <label><strong>編輯所選版本並另存人工校訂稿（保留原始 raw_asr）：</strong></label>
-            <textarea id="correction-text-${escapeHtml(run.run_id)}" rows="4" oninput="onCorrectionInput('${escapeHtml(run.run_id)}', this.value)">${escapeHtml(draftText)}</textarea>
+            <textarea class="correction-textarea" data-run-id="${escapeHtml(run.run_id)}" id="correction-text-${escapeHtml(run.run_id)}" rows="4">${escapeHtml(draftText)}</textarea>
             <div>
-              <button type="button" class="small" id="submit-correct-${escapeHtml(run.run_id)}" onclick="submitCorrection('${escapeHtml(run.run_id)}')">儲存為新版本</button>
-              <button type="button" class="small secondary" onclick="toggleCorrectionPanel('${escapeHtml(run.run_id)}')">取消</button>
+              <button type="button" class="small" id="submit-correct-${escapeHtml(run.run_id)}" data-action="submit-correction" data-run-id="${escapeHtml(run.run_id)}">儲存為新版本</button>
+              <button type="button" class="small secondary" data-action="toggle-correction-panel" data-run-id="${escapeHtml(run.run_id)}">取消</button>
             </div>
           </div>
 
           <div class="filter-toolbar">
             <div class="filter-group">
-              <input type="search" class="filter-input" id="search-input-${escapeHtml(run.run_id)}" placeholder="搜尋段落文字..." value="${escapeHtml(filterState.keyword || '')}" oninput="onFilterInput('${escapeHtml(run.run_id)}')" />
-              <select class="filter-select" id="speaker-filter-${escapeHtml(run.run_id)}" onchange="onFilterInput('${escapeHtml(run.run_id)}')">
+              <input type="search" class="filter-input search-input" data-run-id="${escapeHtml(run.run_id)}" id="search-input-${escapeHtml(run.run_id)}" placeholder="搜尋段落文字..." value="${escapeHtml(filterState.keyword || '')}" />
+              <select class="filter-select speaker-select" data-run-id="${escapeHtml(run.run_id)}" id="speaker-filter-${escapeHtml(run.run_id)}">
                 <option value="">全部講者</option>
                 ${uniqueSpeakers.map(spk => `<option value="${escapeHtml(spk)}" ${spk === filterState.speaker ? "selected" : ""}>${escapeHtml(spk)}</option>`).join("")}
               </select>
             </div>
             <label class="checkbox-label" style="font-size: 0.85rem;">
-              <input type="checkbox" id="flag-filter-${escapeHtml(run.run_id)}" ${filterState.onlyFlagged ? "checked" : ""} onchange="onFilterInput('${escapeHtml(run.run_id)}')" />
+              <input type="checkbox" class="flag-checkbox" data-run-id="${escapeHtml(run.run_id)}" id="flag-filter-${escapeHtml(run.run_id)}" ${filterState.onlyFlagged ? "checked" : ""} />
               僅顯示警示段落
             </label>
           </div>
@@ -760,7 +754,6 @@ form.addEventListener("submit", async (event) => {
       messageNode.textContent = "已成功上傳並加入佇列！";
       messageNode.className = "status";
       form.reset();
-      // 重置預設值
       if (autoSummaryCheck) autoSummaryCheck.checked = true;
       await loadRuns();
       await loadHealth();
@@ -778,11 +771,121 @@ refreshButton.addEventListener("click", () => {
   loadHealth();
 });
 
+// 集中式事件委派，完全取代 inline 事件
 runList.addEventListener("click", (event) => {
-  const link = event.target.closest(".evidence-link");
-  if (!link || !runList.contains(link)) return;
-  highlightSegment(link.dataset.runId, link.dataset.evidenceId);
+  // 1. 處理證據連結點擊
+  const evidenceLink = event.target.closest(".evidence-link");
+  if (evidenceLink && runList.contains(evidenceLink)) {
+    highlightSegment(evidenceLink.dataset.runId, evidenceLink.dataset.evidenceId);
+    return;
+  }
+
+  // 2. 處理各種操作按鈕
+  const actionEl = event.target.closest("[data-action]");
+  if (!actionEl || !runList.contains(actionEl)) return;
+
+  const action = actionEl.dataset.action;
+  const runId = actionEl.dataset.runId;
+
+  switch (action) {
+    case "play-segment": {
+      const startMs = Number(actionEl.dataset.startMs) || 0;
+      const segId = actionEl.dataset.segId || "";
+      playAudioAt(runId, startMs, segId);
+      break;
+    }
+    case "open-rename-speaker": {
+      const speaker = actionEl.dataset.speaker || "";
+      openRenameSpeakerModal(runId, speaker);
+      break;
+    }
+    case "toggle-segment-edit": {
+      const segId = actionEl.dataset.segId || "";
+      toggleSegmentEdit(runId, segId);
+      break;
+    }
+    case "submit-segment-edit": {
+      const segId = actionEl.dataset.segId || "";
+      submitSegmentEdit(runId, segId);
+      break;
+    }
+    case "copy-to-draft": {
+      const row = actionEl.closest(".segment-row");
+      const textNode = row ? row.querySelector(".segment-text") : null;
+      const text = textNode ? textNode.textContent.trim() : "";
+      copySegmentToDraft(runId, text);
+      break;
+    }
+    case "trigger-summary": {
+      triggerSummary(runId);
+      break;
+    }
+    case "delete-run": {
+      const filename = actionEl.dataset.filename || "";
+      deleteRun(runId, filename);
+      break;
+    }
+    case "toggle-rename-panel": {
+      toggleRenamePanel(runId);
+      break;
+    }
+    case "toggle-correction-panel": {
+      toggleCorrectionPanel(runId);
+      break;
+    }
+    case "trigger-export": {
+      triggerExport(runId);
+      break;
+    }
+    case "submit-rename-speaker": {
+      submitRenameSpeaker(runId);
+      break;
+    }
+    case "submit-correction": {
+      submitCorrection(runId);
+      break;
+    }
+  }
 });
+
+// 支援講者標籤鍵盤 Enter/Space 觸發更名
+runList.addEventListener("keydown", (event) => {
+  if (event.key === "Enter" || event.key === " ") {
+    const actionEl = event.target.closest("[data-action='open-rename-speaker']");
+    if (actionEl && runList.contains(actionEl)) {
+      event.preventDefault();
+      openRenameSpeakerModal(actionEl.dataset.runId, actionEl.dataset.speaker || "");
+    }
+  }
+});
+
+// 集中式 change 事件處理（版本切換與下拉篩選）
+runList.addEventListener("change", (event) => {
+  const target = event.target;
+  if (target.classList.contains("revision-select")) {
+    switchRevision(target.dataset.runId, target.value);
+  } else if (target.classList.contains("speaker-select") || target.classList.contains("flag-checkbox")) {
+    onFilterInput(target.dataset.runId);
+  }
+});
+
+// 集中式 input 事件處理（草稿文字與關鍵字搜尋）
+runList.addEventListener("input", (event) => {
+  const target = event.target;
+  if (target.classList.contains("correction-textarea")) {
+    onCorrectionInput(target.dataset.runId, target.value);
+  } else if (target.classList.contains("search-input")) {
+    onFilterInput(target.dataset.runId);
+  }
+});
+
+// 捕捉階段監聽音訊播放進度，更新高亮
+runList.addEventListener("timeupdate", (event) => {
+  const audioEl = event.target;
+  if (audioEl && audioEl.classList && audioEl.classList.contains("audio-player")) {
+    onAudioTimeUpdate(audioEl.dataset.runId, audioEl.currentTime);
+  }
+}, true);
 
 loadHealth();
 loadRuns();

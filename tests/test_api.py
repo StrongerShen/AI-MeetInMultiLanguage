@@ -384,6 +384,60 @@ def test_get_run_audio_endpoint(tmp_path: Path) -> None:
     assert resp_missing.status_code == 404
 
 
+def test_get_run_audio_range_requests(tmp_path: Path) -> None:
+    from meet_in_multi_language import api
+    from meet_in_multi_language.models import EvaluationRun, RunStatus
+
+    app = api.create_app(Settings(tmp_path, 1024 * 1024, "test-key"))
+    store = api.RunStore(tmp_path)
+    data = wav_bytes()
+    total_len = len(data)
+    audio_path = store.audio_path("range-audio.wav")
+    audio_path.write_bytes(data)
+
+    store.save(
+        EvaluationRun(
+            run_id="run-range-test",
+            original_filename="range.wav",
+            stored_filename="range-audio.wav",
+            engine=Engine.BREEZE,
+            status=RunStatus.COMPLETED,
+        )
+    )
+
+    async def exercise_api() -> tuple[httpx.Response, httpx.Response, httpx.Response]:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            # 1. 前 10 bytes: bytes=0-9
+            resp_part1 = await client.get(
+                "/api/runs/run-range-test/audio", headers={"Range": "bytes=0-9"}
+            )
+            # 2. 中間範圍: bytes=10-19
+            resp_part2 = await client.get(
+                "/api/runs/run-range-test/audio", headers={"Range": "bytes=10-19"}
+            )
+            # 3. 超出範圍: bytes=999999-1000000 -> 應回傳 416
+            resp_invalid = await client.get(
+                "/api/runs/run-range-test/audio", headers={"Range": "bytes=999999-1000000"}
+            )
+            return resp_part1, resp_part2, resp_invalid
+
+    resp_part1, resp_part2, resp_invalid = asyncio.run(exercise_api())
+
+    # 驗證 206 與 Content-Range
+    assert resp_part1.status_code == 206
+    assert resp_part1.headers.get("content-range") == f"bytes 0-9/{total_len}"
+    assert resp_part1.content == data[0:10]
+
+    assert resp_part2.status_code == 206
+    assert resp_part2.headers.get("content-range") == f"bytes 10-19/{total_len}"
+    assert resp_part2.content == data[10:20]
+
+    # 驗證 416
+    assert resp_invalid.status_code == 416
+
+
+
 def test_export_run_endpoint(tmp_path: Path) -> None:
     from meet_in_multi_language import api
     from meet_in_multi_language.models import EvaluationRun, RunStatus, TranscriptSegment
@@ -418,20 +472,24 @@ def test_export_run_endpoint(tmp_path: Path) -> None:
         )
     )
 
-    async def exercise_api() -> tuple[httpx.Response, httpx.Response, httpx.Response]:
+    async def exercise_api() -> tuple[httpx.Response, httpx.Response, httpx.Response, httpx.Response]:
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             srt_resp = await client.get("/api/runs/run-export-test/export?format=srt")
             md_resp = await client.get("/api/runs/run-export-test/export?format=md")
             invalid_resp = await client.get("/api/runs/run-export-test/export?format=pdf")
-            return srt_resp, md_resp, invalid_resp
+            bad_rev_resp = await client.get("/api/runs/run-export-test/export?format=txt&revision_id=non-existent")
+            return srt_resp, md_resp, invalid_resp, bad_rev_resp
 
-    srt_resp, md_resp, invalid_resp = asyncio.run(exercise_api())
+    srt_resp, md_resp, invalid_resp, bad_rev_resp = asyncio.run(exercise_api())
     assert srt_resp.status_code == 200
     assert "00:00:01,000 --> 00:00:03,000" in srt_resp.text
     assert md_resp.status_code == 200
     assert "# 會議逐字稿與摘要報告" in md_resp.text
     assert invalid_resp.status_code == 422  # format query regex validation failed
+    assert bad_rev_resp.status_code == 404
+    assert "找不到指定的逐字稿版本" in bad_rev_resp.json()["detail"]
+
 
 
 def test_rename_speaker_endpoint(tmp_path: Path) -> None:
@@ -510,17 +568,31 @@ def test_delete_run_endpoint(tmp_path: Path) -> None:
         )
     )
 
-    async def exercise_api() -> tuple[httpx.Response, httpx.Response]:
+    store.save(
+        EvaluationRun(
+            run_id="run-running",
+            original_filename="busy.wav",
+            stored_filename="to-delete.wav",
+            engine=Engine.BREEZE,
+            status=RunStatus.TRANSCRIBING,
+        )
+    )
+
+    async def exercise_api() -> tuple[httpx.Response, httpx.Response, httpx.Response]:
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            resp_conflict = await client.delete("/api/runs/run-running")
             resp_del = await client.delete("/api/runs/run-api-delete")
             resp_missing = await client.delete("/api/runs/non-existent-run")
-            return resp_del, resp_missing
+            return resp_conflict, resp_del, resp_missing
 
-    resp_del, resp_missing = asyncio.run(exercise_api())
+    resp_conflict, resp_del, resp_missing = asyncio.run(exercise_api())
+    assert resp_conflict.status_code == 409
+    assert "正在執行或排隊中" in resp_conflict.json()["detail"]
     assert resp_del.status_code == 204
     assert not audio_file.exists()
     assert resp_missing.status_code == 404
+
 
 
 def test_correct_segment_endpoint(tmp_path: Path) -> None:
@@ -597,5 +669,6 @@ def test_correct_segment_endpoint(tmp_path: Path) -> None:
     assert new_rev["segments"][1]["start_ms"] == 5000
     assert new_rev["segments"][1]["end_ms"] == 10000
 
-    # 不存在的 segment_id 回傳 400
-    assert resp_bad.status_code == 400
+    # 不存在的 segment_id 回傳 404
+    assert resp_bad.status_code == 404
+    assert "找不到欲校訂的段落" in resp_bad.json()["detail"]

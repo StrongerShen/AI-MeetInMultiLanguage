@@ -45,7 +45,9 @@ class TranscriptResult(BaseModel):
     text: str
     detected_languages: list[str] = Field(default_factory=list)
     segments: list[TranscriptSegment] = Field(default_factory=list)
+    description: str | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
 
 
 class TopicItem(BaseModel):

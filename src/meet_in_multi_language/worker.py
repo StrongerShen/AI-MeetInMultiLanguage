@@ -26,6 +26,19 @@ from .transcription import AsyncTranscriber, Transcriber
 # 中文通常接近一字一 token，保留足夠空間給提示詞、JSON 與最終輸出。
 SUMMARY_CHUNK_CHARS = 12_000
 
+MAX_SPEAKER_NAME_LENGTH = 64
+MAX_SINGLE_SEGMENT_LENGTH = 10_000
+MAX_FULL_TRANSCRIPT_LENGTH = 500_000
+MAX_MODEL_NAME_LENGTH = 128
+
+
+class SegmentNotFoundError(ValueError):
+    """找不到指定的逐字稿段落。"""
+
+
+class RevisionNotFoundError(ValueError):
+    """找不到指定的逐字稿版本。"""
+
 
 def _split_summary_input(transcript: str) -> list[str]:
     chunks: list[str] = []
@@ -98,18 +111,20 @@ async def _summarize_content(
     return str(response.get("message", {}).get("content", ""))
 
 
-def process_run(run_id: str, store: RunStore, transcriber: Transcriber) -> None:
+def process_run(
+    run_id: str,
+    store: RunStore,
+    transcriber: Transcriber,
+) -> None:
     run = store.update(run_id, status=RunStatus.TRANSCRIBING, error=None)
     try:
         result = transcriber.transcribe(
             store.audio_path(run.stored_filename), run.engine, run.keywords
         )
-    except asyncio.CancelledError:
-        store.update(run_id, status=RunStatus.FAILED, error="轉錄工作已取消")
-        raise
     except Exception as error:
         store.update(run_id, status=RunStatus.FAILED, error=str(error))
         return
+
     result.revision_kind = TranscriptRevisionKind.RAW_ASR
     current = store.get(run_id)
     if current.raw_asr is None:
@@ -198,27 +213,25 @@ async def summarize_run_async(
     run = store.get(run_id)
     source_transcript = None
     if source_revision_id:
-        for rev in run.revisions:
-            if rev.revision_id == source_revision_id:
-                source_transcript = rev
-                break
-    if source_revision_id and source_transcript is None:
+        source_transcript = next(
+            (
+                revision
+                for revision in run.revisions
+                if revision.revision_id == source_revision_id
+            ),
+            None,
+        )
+    if source_transcript is None:
+        source_transcript = run.result or run.raw_asr
+    if source_transcript is None:
         store.update(
             run_id,
             status=RunStatus.COMPLETED,
-            error=f"摘要失敗：找不到指定的逐字稿版本 {source_revision_id}",
+            error="找不到可供摘要的逐字稿",
         )
         return
-    if source_transcript is None:
-        source_transcript = run.result or run.raw_asr
 
-    if not source_transcript:
-        store.update(run_id, status=RunStatus.FAILED, error="無可用的逐字稿可供摘要")
-        return
-
-    store.update(run_id, status=RunStatus.SUMMARIZING, error=None)
-    formatted = format_transcript_for_summary(source_transcript)
-
+    formatted_transcript = format_transcript_for_summary(source_transcript)
     try:
         if gpu_queue is not None:
             async with gpu_queue.acquire(
@@ -226,15 +239,26 @@ async def summarize_run_async(
                 category=GpuCategory.OLLAMA,
                 model=model,
             ):
-                content = await _summarize_content(ollama_client, model, formatted)
+                content = await _summarize_content(
+                    ollama_client, model, formatted_transcript
+                )
         else:
-            content = await _summarize_content(ollama_client, model, formatted)
+            content = await _summarize_content(
+                ollama_client, model, formatted_transcript
+            )
 
-        _assert_valid_summary(content, formatted)
-        summary = parse_summary_payload(
-            content, model=model, source_revision_id=source_transcript.revision_id
+        _assert_valid_summary(content, formatted_transcript)
+        summary_result = parse_summary_payload(
+            content,
+            model=model,
+            source_revision_id=source_transcript.revision_id,
         )
-        store.update(run_id, status=RunStatus.COMPLETED, summary=summary, error=None)
+        store.update(
+            run_id,
+            status=RunStatus.COMPLETED,
+            summary=summary_result,
+            error=None,
+        )
     except asyncio.CancelledError:
         store.update(run_id, status=RunStatus.COMPLETED, error="摘要工作已取消")
         raise
@@ -249,13 +273,17 @@ def add_corrected_revision(
     source_revision_id: str | None = None,
     corrected_segments: list[TranscriptSegment] | None = None,
 ) -> EvaluationRun:
-    """新增人工校訂版逐字稿，保留原始 raw_asr 絕不覆蓋。"""
+    """新增人工校訂版逐字稿，保留原始 raw_asr 絕不覆蓋，並盡可能保留原始段落結構。"""
     run = store.get(run_id)
     if not run.raw_asr:
         raise ValueError("此工作尚未有原始 ASR 逐字稿")
     corrected_text = corrected_text.strip()
     if not corrected_text:
         raise ValueError("校訂文字不可為空")
+    if len(corrected_text) > MAX_FULL_TRANSCRIPT_LENGTH:
+        raise ValueError(
+            f"校訂文字長度超過限制（最大 {MAX_FULL_TRANSCRIPT_LENGTH} 字元，目前 {len(corrected_text)} 字元）"
+        )
 
     source = run.result or run.raw_asr
     if source_revision_id:
@@ -264,20 +292,57 @@ def add_corrected_revision(
             None,
         )
         if source is None:
-            raise ValueError(f"找不到來源逐字稿版本 {source_revision_id}")
+            raise RevisionNotFoundError(f"找不到來源逐字稿版本 {source_revision_id}")
 
     if corrected_segments is None:
-        start_ms = source.segments[0].start_ms if source.segments else None
-        end_ms = source.segments[-1].end_ms if source.segments else None
-        corrected_segments = [
-            TranscriptSegment(
-                segment_id="seg-001",
-                start_ms=start_ms,
-                end_ms=end_ms,
-                text=corrected_text,
-            )
-        ]
+        lines = [line.strip() for line in corrected_text.splitlines() if line.strip()]
+        if len(lines) == len(source.segments) and lines:
+            # 行數完全相符：精確逐段對應，完整保留原始時間軸與講者標籤
+            corrected_segments = [
+                seg.model_copy(update={"text": lines[i]})
+                for i, seg in enumerate(source.segments)
+            ]
+        elif len(lines) > 1:
+            # 多行文字但行數不同：為每行保留獨立段落，盡可能對應前段的時間與講者
+            corrected_segments = []
+            for i, line in enumerate(lines):
+                if i < len(source.segments):
+                    orig = source.segments[i]
+                    corrected_segments.append(
+                        TranscriptSegment(
+                            segment_id=orig.segment_id,
+                            start_ms=orig.start_ms,
+                            end_ms=orig.end_ms,
+                            speaker=orig.speaker,
+                            text=line,
+                        )
+                    )
+                else:
+                    last_end = source.segments[-1].end_ms if source.segments else None
+                    corrected_segments.append(
+                        TranscriptSegment(
+                            segment_id=f"seg-{i+1:03d}",
+                            start_ms=last_end,
+                            end_ms=last_end,
+                            speaker=source.segments[-1].speaker if source.segments else None,
+                            text=line,
+                        )
+                    )
+        else:
+            # 單行文字
+            start_ms = source.segments[0].start_ms if source.segments else None
+            end_ms = source.segments[-1].end_ms if source.segments else None
+            corrected_segments = [
+                TranscriptSegment(
+                    segment_id=source.segments[0].segment_id if len(source.segments) == 1 else "seg-001",
+                    start_ms=start_ms,
+                    end_ms=end_ms,
+                    speaker=source.segments[0].speaker if len(source.segments) == 1 else None,
+                    text=corrected_text,
+                )
+            ]
 
+    desc = f"全篇校訂（保留 {len(corrected_segments)} 段結構）"
     corrected_rev = TranscriptResult(
         provider="user",
         model="manual-edit",
@@ -286,6 +351,7 @@ def add_corrected_revision(
         text=corrected_text,
         detected_languages=source.detected_languages,
         segments=corrected_segments,
+        description=desc,
     )
     return store.append_revision(run_id, corrected_rev)
 
@@ -304,6 +370,14 @@ def rename_speaker_revision(
     new_speaker = new_speaker.strip()
     if not new_speaker:
         raise ValueError("新講者名稱不可為空")
+    if len(new_speaker) > MAX_SPEAKER_NAME_LENGTH:
+        raise ValueError(
+            f"新講者名稱長度超過限制（最大 {MAX_SPEAKER_NAME_LENGTH} 字元）"
+        )
+    if old_speaker and len(old_speaker) > MAX_SPEAKER_NAME_LENGTH:
+        raise ValueError(
+            f"原始講者名稱長度超過限制（最大 {MAX_SPEAKER_NAME_LENGTH} 字元）"
+        )
 
     source = run.result or run.raw_asr
     if source_revision_id:
@@ -312,7 +386,7 @@ def rename_speaker_revision(
             None,
         )
         if source is None:
-            raise ValueError(f"找不到來源逐字稿版本 {source_revision_id}")
+            raise RevisionNotFoundError(f"找不到來源逐字稿版本 {source_revision_id}")
 
     target_old = old_speaker.strip()
     matched_count = 0
@@ -336,6 +410,7 @@ def rename_speaker_revision(
         text=source.text,
         detected_languages=source.detected_languages,
         segments=new_segments,
+        description=f"更名講者「{old_speaker or '(未設定)'}」為「{new_speaker}」",
     )
     return store.append_revision(run_id, new_rev)
 
@@ -355,6 +430,14 @@ def update_segment_revision(
     corrected_text = corrected_text.strip()
     if not corrected_text:
         raise ValueError("校訂文字不可為空")
+    if len(corrected_text) > MAX_SINGLE_SEGMENT_LENGTH:
+        raise ValueError(
+            f"單段校訂文字長度超過限制（最大 {MAX_SINGLE_SEGMENT_LENGTH} 字元，目前 {len(corrected_text)} 字元）"
+        )
+    if speaker is not None and len(speaker.strip()) > MAX_SPEAKER_NAME_LENGTH:
+        raise ValueError(
+            f"講者名稱長度超過限制（最大 {MAX_SPEAKER_NAME_LENGTH} 字元）"
+        )
 
     source = run.result or run.raw_asr
     if source_revision_id:
@@ -363,14 +446,14 @@ def update_segment_revision(
             None,
         )
         if source is None:
-            raise ValueError(f"找不到來源逐字稿版本 {source_revision_id}")
+            raise RevisionNotFoundError(f"找不到來源逐字稿版本 {source_revision_id}")
 
     target_idx = next(
         (i for i, s in enumerate(source.segments) if s.segment_id == segment_id),
         None,
     )
     if target_idx is None:
-        raise ValueError(f"找不到欲校訂的段落：{segment_id}")
+        raise SegmentNotFoundError(f"找不到欲校訂的段落：{segment_id}")
 
     new_segments: list[TranscriptSegment] = []
     for i, seg in enumerate(source.segments):
@@ -400,5 +483,6 @@ def update_segment_revision(
         text=new_text,
         detected_languages=source.detected_languages,
         segments=new_segments,
+        description=f"校訂段落 {segment_id}",
     )
     return store.append_revision(run_id, corrected_rev)

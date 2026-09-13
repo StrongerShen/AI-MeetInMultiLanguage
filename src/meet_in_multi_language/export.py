@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from typing import Literal
 
 from .models import EvaluationRun, SummaryResult, TranscriptResult, TranscriptSegment
+from .worker import RevisionNotFoundError
 
 
 ExportFormat = Literal["txt", "srt", "vtt", "md", "json"]
@@ -189,14 +190,15 @@ def export_payload(
     format_name: ExportFormat,
     revision_id: str | None = None,
 ) -> tuple[str, str, str]:
-    """回傳 (content_string, media_type, filename)。"""
     revision = None
     if revision_id:
         revision = next(
             (rev for rev in run.revisions if rev.revision_id == revision_id),
             None,
         )
-    if revision is None:
+        if revision is None:
+            raise RevisionNotFoundError(f"找不到指定的逐字稿版本：{revision_id}")
+    else:
         revision = run.result or run.raw_asr
 
     if revision is None:

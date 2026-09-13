@@ -1,6 +1,7 @@
 # 系統部署與資源調校指南
 
-本文件彙整 `AI-MeetInMultiLanguage` 在實機硬體環境（NVIDIA GeForce RTX 3050 8 GiB 顯存、Ubuntu Linux）之部署實測數據、顯存生命週期管理、模型推論調校建議與常見問題排除指南。
+本文件彙整 `AI-MeetInMultiLanguage` 在實機硬體環境（NVIDIA GeForce RTX 3050 8 GiB 顯存、Ubuntu Linux）之部署實測資料、顯存生命週期管理、模型推論調校建議與常見問題排除指南。
+
 
 ---
 

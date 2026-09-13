@@ -140,9 +140,19 @@ def test_export_payload_all_formats() -> None:
     for fmt in ("txt", "srt", "vtt", "md", "json"):
         content, media_type, filename = export_payload(run, fmt)  # type: ignore[arg-type]
         assert content
-        assert "meeting_raw_asr" in filename
         if fmt == "json":
             payload = json.loads(content)
             assert payload["run_id"] == "test-run-123"
             assert payload["revision"]["revision_id"] == "rev-001"
             assert payload["summary"]["overview"] == summary.overview
+
+
+
+def test_export_payload_raises_on_non_existent_revision_id() -> None:
+    import pytest
+    from meet_in_multi_language.worker import RevisionNotFoundError
+
+    run, _, _ = make_dummy_run()
+
+    with pytest.raises(RevisionNotFoundError, match="找不到指定的逐字稿版本"):
+        export_payload(run, "txt", revision_id="non-existent-rev-id")

@@ -31,6 +31,9 @@ from .speaches import PROFILES, AsyncSpeachesTranscriber
 from .storage import RunNotFoundError, RunStore
 from .transcription import AsyncOpenAITranscriber
 from .worker import (
+    MAX_MODEL_NAME_LENGTH,
+    RevisionNotFoundError,
+    SegmentNotFoundError,
     add_corrected_revision,
     process_run_async,
     rename_speaker_revision,
@@ -219,32 +222,42 @@ def create_app(
         model: str = Form(""),
         source_revision_id: str | None = Form(None),
     ) -> EvaluationRun:
-        try:
-            run = store.get(run_id)
-        except RunNotFoundError as error:
-            raise HTTPException(status_code=404, detail="找不到這筆轉錄工作") from error
-
-        if not (run.result or run.raw_asr):
+        if model and len(model.strip()) > MAX_MODEL_NAME_LENGTH:
             raise HTTPException(
-                status_code=400, detail="工作尚未完成轉錄，無法產生摘要"
+                status_code=400,
+                detail=f"模型名稱長度超過限制（最大 {MAX_MODEL_NAME_LENGTH} 字元）",
             )
 
-        if run.status in (RunStatus.TRANSCRIBING, RunStatus.SUMMARIZING):
-            raise HTTPException(
-                status_code=409, detail="工作正在處理中，請稍候再產生摘要"
+        with store._acquire_lock():
+            try:
+                run = store.get(run_id)
+            except RunNotFoundError as error:
+                raise HTTPException(status_code=404, detail="找不到這筆轉錄工作") from error
+
+            if not (run.result or run.raw_asr):
+                raise HTTPException(
+                    status_code=400, detail="工作尚未完成轉錄，無法產生摘要"
+                )
+
+            if run.status in (RunStatus.TRANSCRIBING, RunStatus.SUMMARIZING):
+                raise HTTPException(
+                    status_code=409, detail="工作正在處理中，請稍候再產生摘要"
+                )
+
+            effective_model = model.strip() or run.summary_model or settings.ollama_model
+            if source_revision_id and not any(
+                revision.revision_id == source_revision_id for revision in run.revisions
+            ):
+                raise HTTPException(status_code=404, detail="找不到指定的逐字稿版本")
+
+            # 原子更新狀態為 SUMMARIZING，防止並行重覆排入
+            store.update(
+                run_id,
+                status=RunStatus.SUMMARIZING,
+                summary_model=effective_model,
+                error=None,
             )
 
-        effective_model = model or run.summary_model or settings.ollama_model
-        if source_revision_id and not any(
-            revision.revision_id == source_revision_id for revision in run.revisions
-        ):
-            raise HTTPException(status_code=404, detail="找不到指定的逐字稿版本")
-        store.update(
-            run_id,
-            status=RunStatus.SUMMARIZING,
-            summary_model=effective_model,
-            error=None,
-        )
         background_tasks.add_task(
             summarize_run_async,
             run_id,
@@ -266,8 +279,8 @@ def create_app(
             return add_corrected_revision(
                 run_id, store, corrected_text, source_revision_id=source_revision_id
             )
-        except RunNotFoundError as error:
-            raise HTTPException(status_code=404, detail="找不到這筆轉錄工作") from error
+        except (RunNotFoundError, RevisionNotFoundError) as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
         except ValueError as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
 
@@ -288,8 +301,8 @@ def create_app(
                 speaker=speaker,
                 source_revision_id=source_revision_id,
             )
-        except RunNotFoundError as error:
-            raise HTTPException(status_code=404, detail="找不到這筆轉錄工作") from error
+        except (RunNotFoundError, RevisionNotFoundError, SegmentNotFoundError) as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
         except ValueError as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
 
@@ -334,6 +347,8 @@ def create_app(
             content, media_type, filename = export_payload(
                 run, format_name=format, revision_id=revision_id  # type: ignore[arg-type]
             )
+        except (RevisionNotFoundError, RunNotFoundError) as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
         except ValueError as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
 
@@ -358,18 +373,29 @@ def create_app(
                 new_speaker=new_speaker,
                 source_revision_id=source_revision_id,
             )
-        except RunNotFoundError as error:
-            raise HTTPException(status_code=404, detail="找不到這筆轉錄工作") from error
+        except (RunNotFoundError, RevisionNotFoundError) as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
         except ValueError as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
 
     @app.delete("/api/runs/{run_id}", status_code=204)
     async def delete_run(run_id: str) -> Response:
         try:
+            run = store.get(run_id)
+            if run.status in (
+                RunStatus.QUEUED,
+                RunStatus.TRANSCRIBING,
+                RunStatus.SUMMARIZING,
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"工作狀態為「{run.status.value}」，正在執行或排隊中，無法刪除",
+                )
             store.delete(run_id, delete_audio=True)
             return Response(status_code=204)
         except RunNotFoundError as error:
             raise HTTPException(status_code=404, detail="找不到這筆轉錄工作") from error
+
 
     return app
 

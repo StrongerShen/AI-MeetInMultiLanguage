@@ -17,14 +17,27 @@ def check_host_memory() -> dict[str, Any]:
         available_bytes = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_AVPHYS_PAGES")
         total_gib = round(total_bytes / (1024**3), 1)
         avail_gib = round(available_bytes / (1024**3), 1)
+
+        is_ok = (total_gib >= 16) and (avail_gib >= 2.0)
+        warn_reasons = []
+        if total_gib < 16:
+            warn_reasons.append(f"總記憶體僅 {total_gib} GiB（建議 16 GiB 以上）")
+        if avail_gib < 2.0:
+            warn_reasons.append(f"可用記憶體僅剩 {avail_gib} GiB（建議 2.0 GiB 以上）")
+
+        detail = f"總記憶體 {total_gib} GiB，可用 {avail_gib} GiB"
+        if warn_reasons:
+            detail += f"（注意：{'；'.join(warn_reasons)}，記憶體過低可能引發 OOM）"
+
         return {
-            "status": "ok" if total_gib >= 16 else "warning",
+            "status": "ok" if is_ok else "warning",
             "total_gib": total_gib,
             "available_gib": avail_gib,
-            "detail": f"總記憶體 {total_gib} GiB，可用 {avail_gib} GiB",
+            "detail": detail,
         }
     except Exception as err:
         return {"status": "warning", "detail": f"無法偵測主機記憶體：{err}"}
+
 
 
 def check_nvidia_gpu() -> dict[str, Any]:
@@ -115,7 +128,7 @@ def check_speaches_service(speaches_url: str = "http://127.0.0.1:8001/v1") -> di
                 "breeze_ready": breeze_ready,
                 "models": models,
                 "detail": (
-                    f"Speaches 正常運行（已就緒模型數：{len(models)}）"
+                    f"Speaches 正常運作（已就緒模型數：{len(models)}）"
                     + ("，包含 Breeze ASR" if breeze_ready else "，尚未載入 Breeze ASR")
                 ),
             }
@@ -154,9 +167,9 @@ def check_ollama_service(
                 "target_model": target_model,
                 "target_ready": target_ready,
                 "detail": (
-                    f"Ollama {version} 正常運行；模型 {target_model} 已就緒"
+                    f"Ollama {version} 正常運作；模型 {target_model} 已就緒"
                     if target_ready
-                    else f"Ollama {version} 正常運行，但尚未拉取 {target_model} 模型"
+                    else f"Ollama {version} 正常運作，但尚未拉取 {target_model} 模型"
                 ),
             }
     except Exception as err:

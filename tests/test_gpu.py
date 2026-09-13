@@ -1,4 +1,5 @@
 import asyncio
+from pathlib import Path
 import pytest
 
 from meet_in_multi_language import gpu as gpu_module
@@ -310,3 +311,139 @@ def test_speaches_unload_tolerates_connect_error_and_404(
     monkeypatch.setattr(gpu_module.httpx, "AsyncClient", ClientConnectError)
     # ConnectError 表示 Speaches 未啟動，顯存無該模型，應順利返回不報錯
     asyncio.run(queue.unload_speaches())
+
+
+def test_speaches_unload_timeout_raises_and_releases_lock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import httpx
+    from meet_in_multi_language.gpu import GpuTransitionError
+
+    class TimeoutClient:
+        def __init__(self, **kwargs) -> None:
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args) -> None:
+            return None
+
+        async def delete(self, url: str):
+            raise httpx.TimeoutException("卸載請求超時")
+
+    monkeypatch.setattr(gpu_module.httpx, "AsyncClient", TimeoutClient)
+    queue = GpuWorkQueue(speaches_url="http://speaches.test/v1")
+
+    # 1. 單獨呼叫 unload_speaches 應拋出 GpuTransitionError
+    with pytest.raises(GpuTransitionError, match="逾時"):
+        asyncio.run(queue.unload_speaches())
+
+    # 2. 在 acquire 流程中，先跑 Speaches，再切換至 Ollama 時卸載失敗：
+    async def run_switch() -> None:
+        async with queue.acquire("asr-task", GpuCategory.SPEACHES):
+            pass
+
+        ollama_executed = False
+        with pytest.raises(GpuTransitionError, match="逾時"):
+            async with queue.acquire("summary-task", GpuCategory.OLLAMA):
+                ollama_executed = True
+
+        assert not ollama_executed
+        assert queue.status.is_busy is False
+        assert queue.status.last_category_used == GpuCategory.SPEACHES
+
+    asyncio.run(run_switch())
+
+
+def test_speaches_unload_http_500_raises_and_releases_lock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import httpx
+    from meet_in_multi_language.gpu import GpuTransitionError
+
+    class ServerErrorClient:
+        def __init__(self, **kwargs) -> None:
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args) -> None:
+            return None
+
+        async def delete(self, url: str):
+            req = httpx.Request("DELETE", url)
+            resp = httpx.Response(500, request=req)
+            resp.raise_for_status()
+
+    monkeypatch.setattr(gpu_module.httpx, "AsyncClient", ServerErrorClient)
+    queue = GpuWorkQueue(speaches_url="http://speaches.test/v1")
+
+    async def run_switch() -> None:
+        async with queue.acquire("asr-task", GpuCategory.SPEACHES):
+            pass
+
+        ollama_executed = False
+        with pytest.raises(GpuTransitionError, match="無法釋放 Speaches ASR 顯存"):
+            async with queue.acquire("summary-task", GpuCategory.OLLAMA):
+                ollama_executed = True
+
+        assert not ollama_executed
+        assert queue.status.is_busy is False
+
+    asyncio.run(run_switch())
+
+
+def test_host_gpu_lock_mutual_exclusion(tmp_path: Path) -> None:
+    import threading
+    import time
+    from meet_in_multi_language.gpu import host_gpu_lock
+
+    lock_file = tmp_path / "test_host_gpu.lock"
+    first_acquired = threading.Event()
+    release_first = threading.Event()
+    second_failed = False
+
+    def holder() -> None:
+        with host_gpu_lock(lock_file):
+            first_acquired.set()
+            release_first.wait()
+
+    t1 = threading.Thread(target=holder)
+    t1.start()
+    first_acquired.wait()
+
+    try:
+        # 第二個程序在鎖已被持有的情況下，短超時必定拋出 TimeoutError
+        with pytest.raises(TimeoutError, match="等候主機 GPU 互斥鎖逾時"):
+            with host_gpu_lock(lock_file, timeout=0.05, poll_interval=0.01):
+                pass
+        second_failed = True
+    finally:
+        release_first.set()
+        t1.join()
+
+    assert second_failed is True
+
+    # 釋放後應能立即正常取得
+    with host_gpu_lock(lock_file, timeout=0.1):
+        pass
+
+
+def test_async_host_gpu_lock_mutual_exclusion(tmp_path: Path) -> None:
+    from meet_in_multi_language.gpu import async_host_gpu_lock
+
+    lock_file = tmp_path / "test_async_host_gpu.lock"
+
+    async def run_test() -> None:
+        async with async_host_gpu_lock(lock_file):
+            with pytest.raises(TimeoutError, match="等候主機 GPU 互斥鎖逾時"):
+                async with async_host_gpu_lock(lock_file, timeout=0.05, poll_interval=0.01):
+                    pass
+
+        # 釋放後能順利再次取得
+        async with async_host_gpu_lock(lock_file, timeout=0.1):
+            pass
+
+    asyncio.run(run_test())

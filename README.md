@@ -2,7 +2,7 @@
 
 將含中文（暫指華語）、英語、日語、臺語的會議錄音，轉成可校訂、可回聽的逐字稿，以及可追溯來源的會議摘要與分析。
 
-狀態：P1 品質原型完成；P2 處理核心、P3 檢閱介面與 P4 交付成果（系統診斷工具 meet-eval doctor、調校指南 docs/tuning.md、82 分鐘長會議實機端到端批次壓測、單段快速校訂與草稿帶入）實作完成，69 項自動化測試全數通過。更新日期：2026-09-13。
+狀態：P1 品質原型完成；P2 處理核心、P3 檢閱介面與 P4 交付成果（系統診斷工具 meet-eval doctor、調校指南 docs/tuning.md、82 分鐘長會議實機端到端批次壓測、單段快速校訂與草稿帶入）實作完成，83 項自動化測試全數通過。更新日期：2026-09-13。
 
 
 目前實測主機基線：Ubuntu、46.9 GiB RAM、NVIDIA GeForce RTX 3050 8 GiB。其他專案文件中的 16 GB 紀錄已過期，不可沿用為本專案的資源判斷依據。
@@ -42,7 +42,8 @@ uv run uvicorn meet_in_multi_language.api:app --reload
 UV_CACHE_DIR=/tmp/ai-meet-uv-cache uv run pytest
 ```
 
-目前共有 47 項自動化測試，涵蓋 GPU 互斥與模型精確卸載／切換、原始稿不可變與一致性、儲存層路徑防護、服務端點與防重、摘要證據引用正規化驗證、長稿分層摘要及人工校訂版本。
+目前共有 83 項自動化測試，涵蓋主機跨行程 GPU 互斥與模型精確卸載／切換、外部連線測試防線、原始稿不可變與一致性、儲存層路徑穿越與 symlink 防護、多程序原子存取、音訊 Range Request (206/416)、服務端點契約與防重、摘要證據引用正規化驗證、長稿分層摘要及段落結構保留之人工校訂版本。
+
 
 評測資料、真實錄音、金鑰與執行結果（`var/`）皆在 `.gitignore` 排除範圍內，**嚴禁提交至 Git**。
 
@@ -402,7 +403,7 @@ LLM 的臺語同音字校正只能產生「校正版」，不得覆蓋 ASR 原�
 - 端到端批次處理 CLI：實作 `meet-eval pipeline` 與 Python 模組 `run_pipeline`，一鍵完成長音訊切段、斷點續跑轉錄、Ollama 摘要與 5 種格式匯出；支援 `num_ctx: 24576` 容納完整長逐字稿。
 - 系統相依性檢查工具：實作 `meet-eval doctor`，一鍵自動探測作業系統、RAM、RTX 3050 顯存狀態、ffmpeg 工具鏈、Speaches/Breeze 與 Ollama 模型就緒度。
 - 健康端點會實際探測 Speaches 與 Ollama；API 摘要端點加入 409 處理中防重；非同步 HTTP client 與轉錄器已加入關閉處理。
-- 指定測試指令目前為 **69 項全數通過**，Python `compileall`、JavaScript `node --check` 與 `git diff --check` 皆通過。
+- 指定測試指令目前為 **83 項全數通過**，Python `compileall`、JavaScript `node --check` 與 `git diff --check` 皆通過。
 
 接手後優先事項：
 
@@ -413,31 +414,32 @@ LLM 的臺語同音字校正只能產生「校正版」，不得覆蓋 ASR 原�
 
 ### 2026-09-13 Codex 程式碼審查交接工作
 
-目前版本雖已通過 69 項測試，但 Codex 複查後判定仍有下列安全性、測試隔離與實機穩定度問題；完成高優先問題及其回歸測試前，不應視為可正式簽核版本。此清單優先於上方較早的完成狀態敘述。
+目前版本已通過 83 項自動化測試，已全數落實 Codex 審查提出的安全性、測試隔離與實機穩定度修正：
 
 #### P0：簽核前必須修正
 
-- [ ] **移除前端持久型 XSS 風險**：`src/meet_in_multi_language/static/app.js` 的逐字稿段落、講者更名、草稿帶入及工作刪除仍把 `segment_id`、講者名稱、ASR 文字與原始檔名插入 inline `onclick`。`escapeHtml()` 無法安全保護 JavaScript 字串內容。全面改用 `data-*` 屬性與集中式 `addEventListener` 事件委派，並移除所有 inline JavaScript。`toggleSegmentEdit()` 亦不得直接把未信任的段落 ID 插入 CSS selector；改用安全的 dataset 比對或正確的 selector escaping。
-- [ ] **封鎖 `stored_filename` 路徑穿越**：`RunStore.audio_path()` 目前直接串接 `upload_dir / stored_filename`。限制為純檔名，並以解析後路徑的 containment 檢查確保目標仍位於 `upload_dir`；音訊讀取與工作刪除都必須共用此保護。加入 `../`、絕對路徑、反斜線與符號連結等攻擊案例測試。
-- [ ] **恢復 pytest 完全隔離**：`tests/test_pipeline.py` 雖注入假的轉錄器及 Ollama client，`run_pipeline()` 仍會向本機 Speaches `/api/ps/{model_id}` 發出真實 DELETE。將模型卸載／顯存切換元件改為可注入相依元件，測試一律使用 fake 或 mock；加入測試防線，確保 pytest 不會連線 `127.0.0.1:8001`、`127.0.0.1:11434` 或任何真實外部服務。
-- [ ] **卸載未確認時禁止載入下一模型**：`GpuWorkQueue.unload_speaches()` 不可在逾時後直接視為成功；CLI pipeline 也不可捕捉所有卸載例外後靜默繼續。遇到逾時、非成功 HTTP 狀態或卸載結果未知時，應停止 Ollama 階段並回報可理解的錯誤，或輪詢模型／顯存狀態直到確認釋放。加入卸載逾時、HTTP 500、取消與例外時不載入 Ollama、鎖必定釋放的測試。
-- [ ] **統一 Web 與 CLI 的 GPU 互斥範圍**：`pipeline.py` 尚未使用 Web 的 `GpuWorkQueue`，因此 CLI、Web 或多個程序並行時可能同時占用 8 GiB 顯存。設計能涵蓋所有入口與多程序的主機級互斥機制，並確認 Breeze 與 Ollama 絕不共存。
+- [x] **移除前端持久型 XSS 風險**：`src/meet_in_multi_language/static/app.js` 全面移除所有 inline JavaScript 與 inline 事件屬性，改用 `data-action` 與集中式 `addEventListener` 事件委派；`copySegmentToDraft` 直接自 DOM 元素提取 `textContent`，不於 HTML 模板拼接逐字稿文字；`toggleSegmentEdit` 與 `highlightSegment` 完全透過 dataset 比對，杜絕 CSS selector 注入風險。已通過 `node --check` 驗證。
+- [x] **封鎖 `stored_filename` 路徑穿越**：`RunStore.audio_path()` 限制為純檔名並實施解析後 containment 檢查，確保解析目標嚴格位於 `upload_dir` 內；覆蓋 `../`、絕對路徑、反斜線與符號連結（symlink）逃逸攻擊測試。
+- [x] **恢復 pytest 完全隔離**：`run_pipeline()` 提供可注入的 `speaches_unloader` 依賴元件；並在 `tests/conftest.py` 建立全域連線防線，測試中若有任何向本機外部埠（`127.0.0.1:8001`、`127.0.0.1:11434`）連線之嘗試，立即阻擋並拋出例外。
+- [x] **卸載未確認時禁止載入下一模型**：`GpuWorkQueue` 與 `run_pipeline` 遇到逾時、HTTP 500 或非預期例外時明確拋出 `GpuTransitionError` 並中止 Ollama 摘要流程，避免 CUDA OOM；已加入逾時、HTTP 500 與例外時鎖必定釋放的完整測試。
+- [x] **統一 Web 與 CLI 的 GPU 互斥範圍**：在 `gpu.py` 實作主機級跨行程檔案互斥鎖（`host_gpu_lock` / `async_host_gpu_lock`），`pipeline.py` (CLI) 與 `GpuWorkQueue` (Web) 皆使用同一把主機鎖，且兩者切換模型時均主動釋放 Breeze 顯存，確保 Breeze 與 Ollama 絕不共存。
 
 #### P1：重要邊界與資料一致性
 
-- [ ] **安全刪除執行中工作**：`DELETE /api/runs/{id}` 必須拒絕或先取消 `transcribing`／`summarizing` 背景工作，並與 GPU 佇列協調，避免刪除後的 worker 繼續執行或寫回。處理 JSON 已刪但音訊刪除失敗的半完成狀態，確保不產生孤兒檔案。
-- [ ] **強化摘要驗證一致性**：CLI pipeline 除 `schema_valid` 外，也必須拒絕未知 `evidence_ids` 與非臺灣慣用詞；測試資料應使用逐字稿實際存在的證據 ID。明確測試 `num_ctx: 24576` 與 `keep_alive: 0` 有傳入 Ollama。
-- [ ] **保留全篇校訂的段落結構**：目前全文校訂會合併成單一 `seg-001`，導致逐段時間戳與講者資訊遺失。改為可逐段對應的校訂格式，或在介面明確限制全文模式並保留來源段落映射；`raw_asr` 仍須永久不可修改、清除或移出版本清單。
-- [ ] **補齊 API 輸入限制與並行控制**：為校訂文字、講者名稱及模型名稱設定合理長度；釐清不存在段落應回傳 400 或 404 的契約；摘要防重檢查與狀態更新應為原子操作，避免兩個請求同時排入。
-- [ ] **評估多程序儲存安全**：目前 `RLock` 只保護單一程序。若允許多個 Uvicorn worker，需使用檔案鎖、SQLite 或其他具原子交易的儲存方式，避免版本 lost update 與共用 `.json.tmp` 競爭。
+- [x] **安全刪除執行中工作**：`DELETE /api/runs/{id}` 檢查工作狀態，若為 `queued`、`transcribing` 或 `summarizing` 則拒絕刪除並回傳 409 Conflict；`storage.delete` 調整為先刪除音訊檔案，若音訊刪除失敗則保留工作紀錄，絕不產生半完成的孤兒檔案。
+- [x] **強化摘要驗證一致性**：CLI pipeline 補齊未知 `evidence_ids` 與非臺灣慣用詞檢查；測試資料引用逐字稿實際存在之段落 ID；明確測試 `num_ctx: 24576` 與 `keep_alive: 0` 正確傳入 Ollama。
+- [x] **保留全篇校訂的段落結構**：全篇校訂支援多行輸入逐段映射，行數相符時完整保留各段落之時間軸（`start_ms` / `end_ms`）與講者標籤；行數不同時亦為每行保留獨立段落序號；`TranscriptResult` 增加 `description` 欄位；`raw_asr` 永遠不可修改。
+- [x] **補齊 API 輸入限制與並行控制**：設定講者名稱（≤ 64 字元）、單段校訂（≤ 10,000 字元）、全篇校訂（≤ 500,000 字元）、模型名稱（≤ 128 字元）之長度防護；確立不存在段落與版本回傳 404 Not Found 契約；摘要觸發在鎖內以原子操作檢查防重。
+- [x] **評估多程序儲存安全**：`RunStore` 實作跨程序重入檔案鎖（`fcntl.flock`），暫存檔加上 PID 與隨機 UUID，消除多 Uvicorn worker 競爭與 lost update 風險。
 
 #### P2：回歸測試、診斷與文件一致性
 
-- [ ] 為音訊 Range Request 加入正式測試：有效範圍回傳 `206`、正確 `Content-Range` 與內容，無效範圍回傳 `416`。2026-09-13 的一次性 ASGI 實測已確認目前 Starlette `FileResponse` 行為正確，但現有測試只覆蓋完整下載的 `200`。
-- [ ] 改善 `meet-eval doctor` 記憶體判定：不可只按總 RAM 判定正常；可用 RAM 過低時應顯示警告。本次實機為 46.9 GiB RAM，但檢測當下僅約 0.5 GiB 可用。
-- [ ] 統一臺灣繁體中文用詞：將 `doctor.py` 的「正常運行」改為「正常運作」，將 `docs/tuning.md` 的「實測數據」改為「實測資料」。`ollama_eval.py` denylist 與其負面測試內的禁用詞屬預期測試資料，不需移除。
-- [ ] 修正文件測試數量不一致：README 前段仍寫 47 項，應與目前 69 項及日後實際測試數量同步。
-- [ ] 若匯出 API 指定不存在的 `revision_id`，不得靜默改用目前版本；應依契約回傳明確的 400 或 404。
+- [x] **音訊 Range Request 正式測試**：在 `test_api.py` 中增加音訊 Range Request 測試，驗證有效範圍回傳 206 與正確 `Content-Range`，無效範圍回傳 416。
+- [x] **改善 `meet-eval doctor` 記憶體判定**：當可用記憶體不足 2.0 GiB 時顯示 warning 與警告說明，避免大記憶體主機在可用 RAM 極低時誤判正常。
+- [x] **統一臺灣繁體中文用詞**：將 `doctor.py` 的「正常運行」改為「正常運作」，將 `docs/tuning.md` 的「實測數據」改為「實測資料」。
+- [x] **修正文件測試數量不一致**：同步 README 測試數量為 83 項。
+- [x] **若匯出 API 指定不存在的 `revision_id`，回傳 404**：`export_payload` 找不到指定版本時拋出 `RevisionNotFoundError`，API 回傳 404 而非靜默 fallback。
+
 
 #### AGY 完成條件
 

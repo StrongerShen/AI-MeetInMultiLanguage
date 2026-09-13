@@ -14,10 +14,31 @@ from meet_in_multi_language.doctor import (
 )
 
 
-def test_check_host_memory() -> None:
+def test_check_host_memory(monkeypatch) -> None:
+    # 1. 實際環境基本驗證
     res = check_host_memory()
     assert res["status"] in ("ok", "warning")
     assert "detail" in res
+
+    # 2. 模擬總記憶體充足 (48 GiB) 但可用記憶體極低 (0.5 GiB) 的情境
+    def fake_sysconf(name: str) -> int:
+        page_size = 4096
+        if name == "SC_PAGE_SIZE":
+            return page_size
+        elif name == "SC_PHYS_PAGES":
+            return int((48 * (1024**3)) / page_size)
+        elif name == "SC_AVPHYS_PAGES":
+            return int((0.5 * (1024**3)) / page_size)
+        return 0
+
+    import os
+    monkeypatch.setattr(os, "sysconf", fake_sysconf)
+
+    low_res = check_host_memory()
+    assert low_res["status"] == "warning"
+    assert low_res["available_gib"] == 0.5
+    assert "可用記憶體僅剩 0.5 GiB" in low_res["detail"]
+
 
 
 def test_check_binary_tools() -> None:
@@ -121,6 +142,11 @@ def test_diagnose_system_and_format(tmp_path: Path, monkeypatch) -> None:
         "meet_in_multi_language.doctor.check_nvidia_gpu",
         lambda: {"status": "ok", "detail": "RTX 3050 8G 正常"},
     )
+    monkeypatch.setattr(
+        "meet_in_multi_language.doctor.check_host_memory",
+        lambda: {"status": "ok", "total_gib": 32.0, "available_gib": 16.0, "detail": "記憶體正常"},
+    )
+
 
     diag = diagnose_system(tmp_path)
     assert diag["overall_status"] == "ok"
