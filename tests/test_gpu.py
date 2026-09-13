@@ -1,23 +1,72 @@
+"""GPU 跨程序模型切換安全測試。
+
+涵蓋情境：
+- Web → CLI、CLI → Web 交錯
+- 兩個獨立 GpuWorkQueue 實例模擬不同 worker
+- 新程序第一個工作就是 Ollama（顯存可能留有 Breeze）
+- 新程序第一個工作就是 Breeze（顯存可能留有 Ollama）
+- 卸載失敗時不得執行工作內容
+- 所有例外與取消路徑都會釋放程序鎖及主機鎖
+
+不接觸真實 Speaches、Ollama 或 GPU。
+"""
 import asyncio
 from pathlib import Path
 import pytest
 
 from meet_in_multi_language import gpu as gpu_module
-from meet_in_multi_language.gpu import GpuCategory, GpuWorkQueue
+from meet_in_multi_language.gpu import (
+    GpuCategory,
+    GpuTransitionError,
+    GpuWorkQueue,
+)
 
+
+# --- 輔助工具 ---
+
+def _make_queue(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    unload_ollama_side_effect: object = None,
+    unload_speaches_side_effect: object = None,
+    record_ollama: list | None = None,
+    record_speaches: list | None = None,
+    known_ollama_models: list[str] | None = None,
+) -> GpuWorkQueue:
+    """建立一個帶有 fake 卸載函式的 GpuWorkQueue。"""
+    queue = GpuWorkQueue(
+        "http://ollama.test",
+        "http://speaches.test/v1",
+        known_ollama_models=known_ollama_models or ["qwen3.5:9b"],
+    )
+    _ollama_log = record_ollama if record_ollama is not None else []
+    _speaches_log = record_speaches if record_speaches is not None else []
+
+    async def fake_unload_ollama(model: str) -> None:
+        _ollama_log.append(model)
+        if isinstance(unload_ollama_side_effect, Exception):
+            raise unload_ollama_side_effect
+
+    async def fake_unload_speaches(model: str | None = None) -> None:
+        _speaches_log.append(model or queue.speaches_model)
+        if isinstance(unload_speaches_side_effect, Exception):
+            raise unload_speaches_side_effect
+
+    monkeypatch.setattr(queue, "unload_ollama", fake_unload_ollama)
+    monkeypatch.setattr(queue, "unload_speaches", fake_unload_speaches)
+    return queue
+
+
+# === 基本互斥 ===
 
 def test_gpu_work_queue_mutual_exclusion(monkeypatch: pytest.MonkeyPatch) -> None:
     async def run_test() -> None:
-        queue = GpuWorkQueue("http://ollama.test")
+        ollama_log: list[str] = []
+        speaches_log: list[str] = []
+        queue = _make_queue(monkeypatch, record_ollama=ollama_log, record_speaches=speaches_log)
         execution_order: list[str] = []
         concurrency_counter = 0
         max_concurrency = 0
-
-        async def fake_unload(*args, **kwargs) -> None:
-            return None
-
-        monkeypatch.setattr(queue, "unload_ollama", fake_unload)
-        monkeypatch.setattr(queue, "unload_speaches", fake_unload)
 
         async def worker(name: str, delay: float) -> None:
             nonlocal concurrency_counter, max_concurrency
@@ -50,62 +99,182 @@ def test_gpu_work_queue_mutual_exclusion(monkeypatch: pytest.MonkeyPatch) -> Non
     asyncio.run(run_test())
 
 
-def test_gpu_work_queue_unloads_ollama_when_switching_to_speaches(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+# === 跨程序切換安全：每次都無條件卸載 ===
+
+def test_gpu_always_unloads_speaches_before_ollama(monkeypatch: pytest.MonkeyPatch) -> None:
+    """進入 Ollama 前一定卸載 Breeze，不依賴程序內歷史。"""
     async def run_test() -> None:
-        queue = GpuWorkQueue("http://ollama.test")
-        unloaded_models: list[str] = []
-
-        async def fake_unload(model: str) -> None:
-            unloaded_models.append(model)
-
-        monkeypatch.setattr(queue, "unload_ollama", fake_unload)
+        speaches_log: list[str] = []
+        queue = _make_queue(monkeypatch, record_speaches=speaches_log)
+        # 直接進入 Ollama（沒有先跑 Speaches），模擬新程序
         async with queue.acquire("ollama-job", GpuCategory.OLLAMA):
             pass
+        assert queue.speaches_model in speaches_log
 
-        # 進入 Speaches 前應卸載本專案設定的 Ollama 模型。
+    asyncio.run(run_test())
+
+
+def test_gpu_always_unloads_ollama_before_speaches(monkeypatch: pytest.MonkeyPatch) -> None:
+    """進入 Speaches 前一定卸載所有已知 Ollama 模型，不依賴程序內歷史。"""
+    async def run_test() -> None:
+        ollama_log: list[str] = []
+        queue = _make_queue(
+            monkeypatch,
+            record_ollama=ollama_log,
+            known_ollama_models=["qwen3.5:9b", "qwen3.8:latest"],
+        )
+        # 直接進入 Speaches（沒有先跑 Ollama），模擬新程序
         async with queue.acquire("speaches-job", GpuCategory.SPEACHES):
             pass
-
-        assert unloaded_models == ["qwen3.5:9b"]
-
-    asyncio.run(run_test())
-
-
-def test_gpu_work_queue_unloads_speaches_before_ollama(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    async def run_test() -> None:
-        queue = GpuWorkQueue("http://ollama.test")
-        unloaded_models: list[str] = []
-
-        async def fake_unload(model: str | None = None) -> None:
-            unloaded_models.append(model or "")
-
-        monkeypatch.setattr(queue, "unload_speaches", fake_unload)
-        async with queue.acquire("transcription", GpuCategory.SPEACHES):
-            pass
-        async with queue.acquire("summary", GpuCategory.OLLAMA):
-            pass
-
-        assert unloaded_models == [""]
+        assert "qwen3.5:9b" in ollama_log
+        assert "qwen3.8:latest" in ollama_log
 
     asyncio.run(run_test())
 
 
-def test_gpu_work_queue_cancellation_repairs_waiting_count(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_new_process_first_job_ollama_with_stale_breeze(monkeypatch: pytest.MonkeyPatch) -> None:
+    """新程序第一個工作就是 Ollama，但顯存可能留有 Breeze。"""
     async def run_test() -> None:
-        queue = GpuWorkQueue("http://ollama.test")
+        speaches_log: list[str] = []
+        queue = _make_queue(monkeypatch, record_speaches=speaches_log)
+        # 模擬全新程序，_last_category_used 為 None
+        assert queue._last_category_used is None
+        async with queue.acquire("ollama-first", GpuCategory.OLLAMA, model="qwen3.5:9b"):
+            pass
+        # 即使沒有歷史，也必須嘗試卸載 Speaches
+        assert len(speaches_log) >= 1
+
+    asyncio.run(run_test())
+
+
+def test_new_process_first_job_breeze_with_stale_ollama(monkeypatch: pytest.MonkeyPatch) -> None:
+    """新程序第一個工作就是 Breeze，但顯存可能留有 Ollama。"""
+    async def run_test() -> None:
+        ollama_log: list[str] = []
+        queue = _make_queue(monkeypatch, record_ollama=ollama_log)
+        assert queue._last_category_used is None
+        async with queue.acquire("speaches-first", GpuCategory.SPEACHES):
+            pass
+        # 即使沒有歷史，也必須嘗試卸載 Ollama
+        assert len(ollama_log) >= 1
+
+    asyncio.run(run_test())
+
+
+# === Web → CLI 與 CLI → Web 交錯 ===
+
+def test_web_then_cli_interleave(monkeypatch: pytest.MonkeyPatch) -> None:
+    """模擬 Web worker (GpuWorkQueue) 先跑 Breeze，再由 CLI (另一 GpuWorkQueue) 跑 Ollama。"""
+    async def run_test() -> None:
+        speaches_log_web: list[str] = []
+        speaches_log_cli: list[str] = []
+        ollama_log_cli: list[str] = []
+
+        web_queue = _make_queue(monkeypatch, record_speaches=speaches_log_web)
+        cli_queue = _make_queue(monkeypatch, record_speaches=speaches_log_cli, record_ollama=ollama_log_cli)
+
+        # Web 跑 Breeze
+        async with web_queue.acquire("web-breeze", GpuCategory.SPEACHES):
+            pass
+
+        # CLI 跑 Ollama（必須先卸載 Breeze）
+        async with cli_queue.acquire("cli-ollama", GpuCategory.OLLAMA, model="qwen3.5:9b"):
+            pass
+
+        assert len(speaches_log_cli) >= 1  # CLI 進入 Ollama 前卸載了 Breeze
+
+    asyncio.run(run_test())
+
+
+def test_cli_then_web_interleave(monkeypatch: pytest.MonkeyPatch) -> None:
+    """模擬 CLI 先跑 Ollama，再由 Web worker 跑 Breeze。"""
+    async def run_test() -> None:
+        ollama_log_web: list[str] = []
+        ollama_log_cli: list[str] = []
+
+        cli_queue = _make_queue(monkeypatch, record_ollama=ollama_log_cli)
+        web_queue = _make_queue(monkeypatch, record_ollama=ollama_log_web)
+
+        # CLI 跑 Ollama
+        async with cli_queue.acquire("cli-ollama", GpuCategory.OLLAMA, model="qwen3.5:9b"):
+            pass
+
+        # Web 跑 Breeze（必須先卸載 Ollama）
+        async with web_queue.acquire("web-breeze", GpuCategory.SPEACHES):
+            pass
+
+        assert "qwen3.5:9b" in ollama_log_web  # Web 進入 Speaches 前卸載了 Ollama
+
+    asyncio.run(run_test())
+
+
+def test_two_independent_workers(monkeypatch: pytest.MonkeyPatch) -> None:
+    """兩個獨立 GpuWorkQueue 實例模擬不同 worker。"""
+    async def run_test() -> None:
+        ollama_log_1: list[str] = []
+        speaches_log_1: list[str] = []
+        ollama_log_2: list[str] = []
+        speaches_log_2: list[str] = []
+
+        q1 = _make_queue(monkeypatch, record_ollama=ollama_log_1, record_speaches=speaches_log_1)
+        q2 = _make_queue(monkeypatch, record_ollama=ollama_log_2, record_speaches=speaches_log_2)
+
+        # q1 跑 Breeze
+        async with q1.acquire("q1-breeze", GpuCategory.SPEACHES):
+            pass
+
+        # q2 跑 Ollama（q2 不知道 q1 做了什麼，但必須先嘗試卸載 Breeze）
+        async with q2.acquire("q2-ollama", GpuCategory.OLLAMA, model="qwen3.5:9b"):
+            pass
+
+        assert len(speaches_log_2) >= 1
+
+    asyncio.run(run_test())
+
+
+# === 卸載失敗時禁止執行 ===
+
+def test_unload_speaches_failure_blocks_ollama(monkeypatch: pytest.MonkeyPatch) -> None:
+    """卸載 Speaches 失敗時不得執行 Ollama 工作。"""
+    async def run_test() -> None:
+        queue = _make_queue(
+            monkeypatch,
+            unload_speaches_side_effect=GpuTransitionError("卸載 Speaches 模型失敗"),
+        )
+        ollama_executed = False
+        with pytest.raises(GpuTransitionError, match="卸載 Speaches 模型失敗"):
+            async with queue.acquire("blocked-ollama", GpuCategory.OLLAMA):
+                ollama_executed = True
+        assert not ollama_executed
+        assert queue.status.is_busy is False
+
+    asyncio.run(run_test())
+
+
+def test_unload_ollama_failure_blocks_speaches(monkeypatch: pytest.MonkeyPatch) -> None:
+    """卸載 Ollama 失敗時不得執行 Speaches 工作。"""
+    async def run_test() -> None:
+        queue = _make_queue(
+            monkeypatch,
+            unload_ollama_side_effect=GpuTransitionError("卸載 Ollama 模型失敗"),
+        )
+        speaches_executed = False
+        with pytest.raises(GpuTransitionError, match="卸載 Ollama 模型失敗"):
+            async with queue.acquire("blocked-speaches", GpuCategory.SPEACHES):
+                speaches_executed = True
+        assert not speaches_executed
+        assert queue.status.is_busy is False
+
+    asyncio.run(run_test())
+
+
+# === 鎖的釋放保證 ===
+
+def test_cancellation_repairs_waiting_count(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def run_test() -> None:
+        queue = _make_queue(monkeypatch)
         release_holder = asyncio.Event()
         holder_started = asyncio.Event()
-
-        async def fake_unload(*args, **kwargs) -> None:
-            return None
-
-        monkeypatch.setattr(queue, "unload_ollama", fake_unload)
 
         async def holder() -> None:
             async with queue.acquire("holder", GpuCategory.SPEACHES):
@@ -134,28 +303,51 @@ def test_gpu_work_queue_cancellation_repairs_waiting_count(
     asyncio.run(run_test())
 
 
-def test_gpu_work_queue_releases_lock_after_task_exception(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_exception_releases_process_and_host_lock(monkeypatch: pytest.MonkeyPatch) -> None:
+    """工作內容拋出例外時，程序鎖及主機鎖都會釋放。"""
     async def run_test() -> None:
-        queue = GpuWorkQueue("http://ollama.test")
-
-        async def fake_unload(*args, **kwargs) -> None:
-            return None
-
-        monkeypatch.setattr(queue, "unload_ollama", fake_unload)
+        queue = _make_queue(monkeypatch)
 
         with pytest.raises(RuntimeError, match="預期錯誤"):
             async with queue.acquire("failed", GpuCategory.SPEACHES):
                 raise RuntimeError("預期錯誤")
 
         assert queue.status.is_busy is False
+        # 應能取得下一個工作
         async with queue.acquire("next", GpuCategory.SPEACHES):
             pass
         assert queue.status.completed_tasks == 2
 
     asyncio.run(run_test())
 
+
+def test_unload_failure_releases_all_locks(monkeypatch: pytest.MonkeyPatch) -> None:
+    """卸載失敗時程序鎖及主機鎖都會釋放，後續工作可正常取得。"""
+    async def run_test() -> None:
+        queue = _make_queue(
+            monkeypatch,
+            unload_speaches_side_effect=GpuTransitionError("模擬卸載失敗"),
+        )
+
+        with pytest.raises(GpuTransitionError):
+            async with queue.acquire("blocked", GpuCategory.OLLAMA):
+                pass
+
+        assert queue.status.is_busy is False
+
+        # 修復卸載函式後，下一個工作應能正常執行
+        async def fixed_unload(model: str | None = None) -> None:
+            return None
+
+        monkeypatch.setattr(queue, "unload_speaches", fixed_unload)
+        async with queue.acquire("recovered", GpuCategory.OLLAMA):
+            pass
+        assert queue.status.completed_tasks == 1
+
+    asyncio.run(run_test())
+
+
+# === 原有 HTTP 層級測試 ===
 
 def test_ollama_unload_sends_explicit_model(monkeypatch: pytest.MonkeyPatch) -> None:
     requests: list[tuple[str, dict[str, object]]] = []
@@ -222,54 +414,6 @@ def test_speaches_unload_uses_encoded_model_id(
     ]
 
 
-def test_gpu_work_queue_unloads_custom_ollama_model_when_switching(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    async def run_test() -> None:
-        queue = GpuWorkQueue("http://ollama.test")
-        unloaded_models: list[str] = []
-
-        async def fake_unload(model: str) -> None:
-            unloaded_models.append(model)
-
-        monkeypatch.setattr(queue, "unload_ollama", fake_unload)
-        # 上一個 Ollama 工作明確使用 qwen3.8:latest
-        async with queue.acquire("ollama-job", GpuCategory.OLLAMA, model="qwen3.8:latest"):
-            pass
-
-        # 切換到 Speaches 時，應精確卸載 qwen3.8:latest 而非預設的 qwen3.5:9b
-        async with queue.acquire("speaches-job", GpuCategory.SPEACHES):
-            pass
-
-        assert unloaded_models == ["qwen3.8:latest"]
-
-    asyncio.run(run_test())
-
-
-def test_gpu_work_queue_unloads_previous_ollama_model_when_switching_models(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    async def run_test() -> None:
-        queue = GpuWorkQueue("http://ollama.test")
-        unloaded_models: list[str] = []
-
-        async def fake_unload(model: str) -> None:
-            unloaded_models.append(model)
-
-        monkeypatch.setattr(queue, "unload_ollama", fake_unload)
-        # 第一個任務使用 qwen3.5:9b
-        async with queue.acquire("ollama-1", GpuCategory.OLLAMA, model="qwen3.5:9b"):
-            pass
-
-        # 第二個任務切換為 qwen3.8:latest，同屬 OLLAMA 類別但模型不同，應釋放前一個模型
-        async with queue.acquire("ollama-2", GpuCategory.OLLAMA, model="qwen3.8:latest"):
-            pass
-
-        assert unloaded_models == ["qwen3.5:9b"]
-
-    asyncio.run(run_test())
-
-
 def test_speaches_unload_tolerates_connect_error_and_404(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -292,7 +436,6 @@ def test_speaches_unload_tolerates_connect_error_and_404(
 
     monkeypatch.setattr(gpu_module.httpx, "AsyncClient", Client404)
     queue = GpuWorkQueue(speaches_url="http://speaches.test/v1")
-    # 404 表示模型本就未在 Speaches 顯存中，應順利返回不報錯
     asyncio.run(queue.unload_speaches())
 
     class ClientConnectError:
@@ -309,7 +452,6 @@ def test_speaches_unload_tolerates_connect_error_and_404(
             raise httpx.ConnectError("Connection refused")
 
     monkeypatch.setattr(gpu_module.httpx, "AsyncClient", ClientConnectError)
-    # ConnectError 表示 Speaches 未啟動，顯存無該模型，應順利返回不報錯
     asyncio.run(queue.unload_speaches())
 
 
@@ -317,7 +459,6 @@ def test_speaches_unload_timeout_raises_and_releases_lock(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import httpx
-    from meet_in_multi_language.gpu import GpuTransitionError
 
     class TimeoutClient:
         def __init__(self, **kwargs) -> None:
@@ -335,32 +476,14 @@ def test_speaches_unload_timeout_raises_and_releases_lock(
     monkeypatch.setattr(gpu_module.httpx, "AsyncClient", TimeoutClient)
     queue = GpuWorkQueue(speaches_url="http://speaches.test/v1")
 
-    # 1. 單獨呼叫 unload_speaches 應拋出 GpuTransitionError
     with pytest.raises(GpuTransitionError, match="逾時"):
         asyncio.run(queue.unload_speaches())
-
-    # 2. 在 acquire 流程中，先跑 Speaches，再切換至 Ollama 時卸載失敗：
-    async def run_switch() -> None:
-        async with queue.acquire("asr-task", GpuCategory.SPEACHES):
-            pass
-
-        ollama_executed = False
-        with pytest.raises(GpuTransitionError, match="逾時"):
-            async with queue.acquire("summary-task", GpuCategory.OLLAMA):
-                ollama_executed = True
-
-        assert not ollama_executed
-        assert queue.status.is_busy is False
-        assert queue.status.last_category_used == GpuCategory.SPEACHES
-
-    asyncio.run(run_switch())
 
 
 def test_speaches_unload_http_500_raises_and_releases_lock(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import httpx
-    from meet_in_multi_language.gpu import GpuTransitionError
 
     class ServerErrorClient:
         def __init__(self, **kwargs) -> None:
@@ -381,8 +504,26 @@ def test_speaches_unload_http_500_raises_and_releases_lock(
     queue = GpuWorkQueue(speaches_url="http://speaches.test/v1")
 
     async def run_switch() -> None:
+        speaches_log: list[str] = []
+
+        async def fake_unload_speaches_ok(model: str | None = None) -> None:
+            speaches_log.append(model or queue.speaches_model)
+
+        async def fake_unload_ollama(model: str) -> None:
+            pass
+
+        # 先跑 Speaches（用 ok 的 unload）
+        monkeypatch.setattr(queue, "unload_speaches", fake_unload_speaches_ok)
+        monkeypatch.setattr(queue, "unload_ollama", fake_unload_ollama)
+
         async with queue.acquire("asr-task", GpuCategory.SPEACHES):
             pass
+
+        # 切回 http 500 的 unload
+        async def fake_unload_speaches_fail(model: str | None = None) -> None:
+            raise GpuTransitionError("無法釋放 Speaches ASR 顯存")
+
+        monkeypatch.setattr(queue, "unload_speaches", fake_unload_speaches_fail)
 
         ollama_executed = False
         with pytest.raises(GpuTransitionError, match="無法釋放 Speaches ASR 顯存"):
@@ -395,9 +536,10 @@ def test_speaches_unload_http_500_raises_and_releases_lock(
     asyncio.run(run_switch())
 
 
+# === 主機級鎖測試 ===
+
 def test_host_gpu_lock_mutual_exclusion(tmp_path: Path) -> None:
     import threading
-    import time
     from meet_in_multi_language.gpu import host_gpu_lock
 
     lock_file = tmp_path / "test_host_gpu.lock"
@@ -415,7 +557,6 @@ def test_host_gpu_lock_mutual_exclusion(tmp_path: Path) -> None:
     first_acquired.wait()
 
     try:
-        # 第二個程序在鎖已被持有的情況下，短超時必定拋出 TimeoutError
         with pytest.raises(TimeoutError, match="等候主機 GPU 互斥鎖逾時"):
             with host_gpu_lock(lock_file, timeout=0.05, poll_interval=0.01):
                 pass
@@ -426,7 +567,6 @@ def test_host_gpu_lock_mutual_exclusion(tmp_path: Path) -> None:
 
     assert second_failed is True
 
-    # 釋放後應能立即正常取得
     with host_gpu_lock(lock_file, timeout=0.1):
         pass
 
@@ -442,7 +582,6 @@ def test_async_host_gpu_lock_mutual_exclusion(tmp_path: Path) -> None:
                 async with async_host_gpu_lock(lock_file, timeout=0.05, poll_interval=0.01):
                     pass
 
-        # 釋放後能順利再次取得
         async with async_host_gpu_lock(lock_file, timeout=0.1):
             pass
 

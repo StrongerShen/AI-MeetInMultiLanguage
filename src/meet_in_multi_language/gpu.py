@@ -21,6 +21,14 @@ DEFAULT_GPU_LOCK_FILE = Path(
     )
 )
 
+# 本專案可能使用的 Ollama 模型清單（用於跨程序安全卸載）
+KNOWN_OLLAMA_MODELS: list[str] = [
+    "qwen3.5:9b",
+    "qwen3.8:latest",
+    "gemma4:12b",
+    "muse-glimmer:latest",
+]
+
 
 @contextmanager
 def host_gpu_lock(
@@ -115,7 +123,13 @@ class GpuQueueStatus:
 
 
 class GpuWorkQueue:
-    """單一行程內的 GPU 互斥工作佇列與模型切換守門員。"""
+    """單一行程內的 GPU 互斥工作佇列與模型切換守門員。
+
+    跨程序安全策略：不依賴程序內歷史狀態（如 _last_category_used）。
+    每次進入 Ollama 工作前，都會嘗試卸載 Breeze ASR 模型。
+    每次進入 Speaches 工作前，都會嘗試卸載所有已知的 Ollama 模型。
+    卸載逾時、HTTP 失敗或狀態未知時，禁止開始下一模型。
+    """
 
     def __init__(
         self,
@@ -124,19 +138,19 @@ class GpuWorkQueue:
         ollama_model: str = "qwen3.5:9b",
         speaches_model: str = "paulpengtw/faster-whisper-Breeze-ASR-26",
         gpu_lock_file: Path | str | None = None,
+        known_ollama_models: list[str] | None = None,
     ) -> None:
         self.ollama_url = ollama_url.rstrip("/")
         self.speaches_url = speaches_url.rstrip("/")
         self.ollama_model = ollama_model
         self.speaches_model = speaches_model
         self.gpu_lock_file = gpu_lock_file
+        self.known_ollama_models = known_ollama_models if known_ollama_models is not None else list(KNOWN_OLLAMA_MODELS)
         self._lock = asyncio.Lock()
         self._waiting_count = 0
         self._active_task: str | None = None
         self._active_category: GpuCategory | None = None
         self._last_category_used: GpuCategory | None = None
-        self._last_ollama_model: str | None = None
-        self._last_speaches_model: str | None = None
         self._completed_tasks = 0
 
     @property
@@ -172,9 +186,17 @@ class GpuWorkQueue:
         except (httpx.HTTPError, ValueError) as error:
             raise GpuTransitionError(f"無法卸載 Ollama 模型 {model}：{error}") from error
 
+    async def unload_all_known_ollama_models(self) -> None:
+        """嘗試卸載本專案所有已知的 Ollama 模型，確保跨程序安全。
+
+        任何一個模型卸載失敗（非 ConnectError、非 404）時拋出 GpuTransitionError。
+        """
+        for model in self.known_ollama_models:
+            await self.unload_ollama(model)
+
     async def unload_speaches(self, model: str | None = None) -> None:
         """透過 Speaches 實驗性 API 卸載本專案使用的 ASR 模型。"""
-        target_model = model or self._last_speaches_model or self.speaches_model
+        target_model = model or self.speaches_model
         if not target_model:
             raise GpuTransitionError("未指定要卸載的 Speaches 模型")
         api_root = self.speaches_url.removesuffix("/v1")
@@ -206,6 +228,20 @@ class GpuWorkQueue:
                 f"{error}"
             ) from error
 
+    async def _ensure_safe_for_category(
+        self, category: GpuCategory, model: str
+    ) -> None:
+        """無條件確保進入指定類別前，所有可能衝突的模型都已卸載。
+
+        不依賴程序內歷史；每次都主動清理，保證跨程序、程序重啟、崩潰後的安全。
+        """
+        if category == GpuCategory.OLLAMA:
+            # 進入 Ollama 前：卸載 Breeze ASR
+            await self.unload_speaches()
+        elif category == GpuCategory.SPEACHES:
+            # 進入 Speaches 前：卸載所有已知 Ollama 模型
+            await self.unload_all_known_ollama_models()
+
     @asynccontextmanager
     async def acquire(
         self,
@@ -223,31 +259,13 @@ class GpuWorkQueue:
 
         self._waiting_count -= 1
         entered_task = False
-        effective_ollama_to_unload = (
-            ollama_model_to_unload or self._last_ollama_model or self.ollama_model
-        )
         try:
             async with async_host_gpu_lock(self.gpu_lock_file):
                 self._active_task = task_name
                 self._active_category = category
 
-                if category == GpuCategory.SPEACHES:
-                    if self._last_category_used == GpuCategory.OLLAMA:
-                        await self.unload_ollama(effective_ollama_to_unload)
-                        self._last_ollama_model = None
-                elif category == GpuCategory.OLLAMA:
-                    if self._last_category_used == GpuCategory.SPEACHES:
-                        await self.unload_speaches()
-                        self._last_speaches_model = None
-                    elif (
-                        self._last_category_used == GpuCategory.OLLAMA
-                        and self._last_ollama_model
-                        and model
-                        and self._last_ollama_model != model
-                    ):
-                        # 同為 Ollama 任務但切換模型時，卸載前一個模型以釋放顯存
-                        await self.unload_ollama(self._last_ollama_model)
-                        self._last_ollama_model = None
+                # 跨程序安全：無條件清理可能衝突的模型
+                await self._ensure_safe_for_category(category, model)
 
                 entered_task = True
                 yield
@@ -256,10 +274,6 @@ class GpuWorkQueue:
             self._active_category = None
             if entered_task:
                 self._last_category_used = category
-                if category == GpuCategory.OLLAMA:
-                    self._last_ollama_model = model or self.ollama_model
-                elif category == GpuCategory.SPEACHES:
-                    self._last_speaches_model = model or self.speaches_model
                 self._completed_tasks += 1
             self._lock.release()
 

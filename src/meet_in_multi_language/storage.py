@@ -10,7 +10,7 @@ from pathlib import Path
 from threading import RLock
 from typing import Any, Iterator
 
-from .models import EvaluationRun, TranscriptResult
+from .models import EvaluationRun, RunStatus, TranscriptResult
 
 
 class RunNotFoundError(KeyError):
@@ -19,6 +19,19 @@ class RunNotFoundError(KeyError):
 
 class ImmutableRawAsrError(ValueError):
     pass
+
+
+class DeleteConflictError(ValueError):
+    """工作正在執行或排隊中，無法刪除。"""
+    pass
+
+
+# 刪除時禁止刪除的狀態集合
+_ACTIVE_STATUSES = frozenset({
+    RunStatus.QUEUED,
+    RunStatus.TRANSCRIBING,
+    RunStatus.SUMMARIZING,
+})
 
 
 def _validate_run_id(run_id: str) -> None:
@@ -181,6 +194,34 @@ class RunStore:
                 for path in self.run_dir.glob("*.json")
             ]
         return sorted(runs, key=lambda item: item.created_at, reverse=True)
+
+    def safe_delete(self, run_id: str) -> None:
+        """原子性安全刪除：在同一個跨程序鎖定交易內完成狀態檢查、音訊刪除及工作紀錄移除。
+
+        1. 讀取工作
+        2. 確認狀態不屬於 queued、transcribing、summarizing
+        3. 先刪除音訊
+        4. 音訊刪除成功後再刪除工作紀錄
+        """
+        _validate_run_id(run_id)
+        with self._acquire_lock():
+            run = self.get(run_id)
+            if run.status in _ACTIVE_STATUSES:
+                raise DeleteConflictError(
+                    f"工作狀態為「{run.status.value}」，正在執行或排隊中，無法刪除"
+                )
+            # 先刪除音訊檔案
+            if run.stored_filename:
+                try:
+                    audio_file = self.audio_path(run.stored_filename)
+                    audio_file.unlink(missing_ok=True)
+                except Exception as err:
+                    raise OSError(
+                        f"刪除音訊檔案失敗，已保留工作紀錄避免產生孤兒檔案：{err}"
+                    ) from err
+            # 音訊刪除成功後再刪除工作紀錄
+            run_file = self.run_dir / f"{run_id}.json"
+            run_file.unlink(missing_ok=True)
 
     def delete(self, run_id: str, delete_audio: bool = True) -> None:
         """刪除工作紀錄，並可選擇性安全刪除關聯的音訊檔案。"""

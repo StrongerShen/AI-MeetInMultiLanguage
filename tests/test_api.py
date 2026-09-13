@@ -4,6 +4,7 @@ import wave
 from pathlib import Path
 
 import httpx
+import pytest
 
 from meet_in_multi_language.config import Settings
 from meet_in_multi_language.models import Engine, TranscriptResult
@@ -672,3 +673,140 @@ def test_correct_segment_endpoint(tmp_path: Path) -> None:
     # 不存在的 segment_id 回傳 404
     assert resp_bad.status_code == 404
     assert "找不到欲校訂的段落" in resp_bad.json()["detail"]
+
+
+def test_create_run_summary_model_128_chars_accepted(tmp_path: Path) -> None:
+    """POST /api/runs 的 summary_model 128 字元接受。"""
+    from meet_in_multi_language import api
+
+    class FakeTranscriber:
+        def __init__(self, api_key: str) -> None:
+            pass
+
+        async def transcribe(self, audio_path: Path, engine: Engine, keywords: list[str]) -> TranscriptResult:
+            return TranscriptResult(model=engine.value, text="完成")
+
+    monkeypatch_ctx = pytest.MonkeyPatch()
+    monkeypatch_ctx.setattr(api, "AsyncOpenAITranscriber", FakeTranscriber)
+    app = api.create_app(Settings(tmp_path, 1024 * 1024, "test-key"))
+
+    async def exercise_api() -> httpx.Response:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            return await client.post(
+                "/api/runs",
+                data={
+                    "engine": Engine.TRANSCRIBE.value,
+                    "summary_model": "m" * 128,
+                    "auto_summary": "false",
+                },
+                files={"audio": ("sample.wav", wav_bytes(), "audio/wav")},
+            )
+
+    import asyncio
+    resp = asyncio.run(exercise_api())
+    assert resp.status_code == 202
+    assert resp.json()["summary_model"] == "m" * 128
+    monkeypatch_ctx.undo()
+
+
+def test_create_run_summary_model_129_chars_rejected(tmp_path: Path) -> None:
+    """POST /api/runs 的 summary_model 129 字元回傳 400。"""
+    from meet_in_multi_language import api
+    from meet_in_multi_language.config import Settings
+
+    app = api.create_app(Settings(tmp_path, 1024 * 1024, "test-key"))
+
+    async def exercise_api() -> httpx.Response:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            return await client.post(
+                "/api/runs",
+                data={
+                    "engine": Engine.TRANSCRIBE.value,
+                    "summary_model": "m" * 129,
+                    "auto_summary": "false",
+                },
+                files={"audio": ("sample.wav", wav_bytes(), "audio/wav")},
+            )
+
+    import asyncio
+    resp = asyncio.run(exercise_api())
+    assert resp.status_code == 400
+    assert "模型名稱長度超過限制" in resp.json()["detail"]
+
+
+def test_create_run_summary_model_too_long_even_without_auto_summary(tmp_path: Path) -> None:
+    """即使 auto_summary=false，也不得儲存超長模型名稱。"""
+    from meet_in_multi_language import api
+    from meet_in_multi_language.config import Settings
+
+    app = api.create_app(Settings(tmp_path, 1024 * 1024, "test-key"))
+
+    async def exercise_api() -> httpx.Response:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            return await client.post(
+                "/api/runs",
+                data={
+                    "engine": Engine.TRANSCRIBE.value,
+                    "summary_model": "x" * 200,
+                    "auto_summary": "false",
+                },
+                files={"audio": ("sample.wav", wav_bytes(), "audio/wav")},
+            )
+
+    import asyncio
+    resp = asyncio.run(exercise_api())
+    assert resp.status_code == 400
+
+
+def test_delete_run_uses_atomic_safe_delete(tmp_path: Path) -> None:
+    """驗證 DELETE /api/runs/{id} 使用原子性 safe_delete，409 由儲存層統一判定。"""
+    from meet_in_multi_language import api
+    from meet_in_multi_language.models import EvaluationRun, RunStatus
+    from meet_in_multi_language.config import Settings
+
+    app = api.create_app(Settings(tmp_path, 1024 * 1024, "test-key"))
+    store = api.RunStore(tmp_path)
+
+    # 排隊中的工作
+    store.save(
+        EvaluationRun(
+            run_id="run-queued",
+            original_filename="q.wav",
+            stored_filename="q.wav",
+            engine=Engine.BREEZE,
+            status=RunStatus.QUEUED,
+        )
+    )
+
+    # 已完成的工作
+    audio_file = store.audio_path("done.wav")
+    audio_file.write_bytes(wav_bytes())
+    store.save(
+        EvaluationRun(
+            run_id="run-done",
+            original_filename="done.wav",
+            stored_filename="done.wav",
+            engine=Engine.BREEZE,
+            status=RunStatus.COMPLETED,
+        )
+    )
+
+    import asyncio
+
+    async def exercise_api() -> tuple[httpx.Response, httpx.Response, httpx.Response]:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            resp_conflict = await client.delete("/api/runs/run-queued")
+            resp_ok = await client.delete("/api/runs/run-done")
+            resp_missing = await client.delete("/api/runs/non-existent")
+            return resp_conflict, resp_ok, resp_missing
+
+    resp_conflict, resp_ok, resp_missing = asyncio.run(exercise_api())
+    assert resp_conflict.status_code == 409
+    assert "正在執行或排隊中" in resp_conflict.json()["detail"]
+    assert resp_ok.status_code == 204
+    assert not audio_file.exists()
+    assert resp_missing.status_code == 404

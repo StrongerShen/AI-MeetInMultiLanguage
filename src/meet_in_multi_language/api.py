@@ -28,7 +28,7 @@ from .gpu import GpuWorkQueue
 from .models import Engine, EvaluationRun, RunStatus, TranscriptResult
 from .ollama_eval import AsyncOllamaClient
 from .speaches import PROFILES, AsyncSpeachesTranscriber
-from .storage import RunNotFoundError, RunStore
+from .storage import DeleteConflictError, RunNotFoundError, RunStore
 from .transcription import AsyncOpenAITranscriber
 from .worker import (
     MAX_MODEL_NAME_LENGTH,
@@ -147,6 +147,12 @@ def create_app(
         if engine in (Engine.TRANSCRIBE, Engine.DIARIZE) and not settings.openai_api_key:
             raise HTTPException(
                 status_code=503, detail="此轉錄方式需要伺服器環境設定 OPENAI_API_KEY"
+            )
+
+        if summary_model and len(summary_model.strip()) > MAX_MODEL_NAME_LENGTH:
+            raise HTTPException(
+                status_code=400,
+                detail=f"模型名稱長度超過限制（最大 {MAX_MODEL_NAME_LENGTH} 字元）",
             )
 
         original_filename = Path(audio.filename or "audio").name
@@ -381,18 +387,10 @@ def create_app(
     @app.delete("/api/runs/{run_id}", status_code=204)
     async def delete_run(run_id: str) -> Response:
         try:
-            run = store.get(run_id)
-            if run.status in (
-                RunStatus.QUEUED,
-                RunStatus.TRANSCRIBING,
-                RunStatus.SUMMARIZING,
-            ):
-                raise HTTPException(
-                    status_code=409,
-                    detail=f"工作狀態為「{run.status.value}」，正在執行或排隊中，無法刪除",
-                )
-            store.delete(run_id, delete_audio=True)
+            store.safe_delete(run_id)
             return Response(status_code=204)
+        except DeleteConflictError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
         except RunNotFoundError as error:
             raise HTTPException(status_code=404, detail="找不到這筆轉錄工作") from error
 

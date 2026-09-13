@@ -169,14 +169,14 @@ def test_network_guard_blocks_external_services() -> None:
     import socket
     import pytest
 
-    with pytest.raises(RuntimeError, match="測試環境防線觸發：禁止直接連線至外部真實服務"):
+    with pytest.raises(RuntimeError, match="測試環境防線觸發：禁止直接連線至外部服務"):
         s = socket.socket()
         try:
             s.connect(("127.0.0.1", 8001))
         finally:
             s.close()
 
-    with pytest.raises(RuntimeError, match="測試環境防線觸發：禁止直接連線至外部真實服務"):
+    with pytest.raises(RuntimeError, match="測試環境防線觸發：禁止直接連線至外部服務"):
         s = socket.socket()
         try:
             s.connect(("127.0.0.1", 11434))

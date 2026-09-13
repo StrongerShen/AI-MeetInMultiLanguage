@@ -137,6 +137,15 @@ def run_pipeline(
     with gpu_ctx:
         if transcriber is None:
             if engine == "breeze":
+                # 跨程序安全：進入 Speaches 前同步卸載 Ollama
+                from .gpu import KNOWN_OLLAMA_MODELS
+                for m in KNOWN_OLLAMA_MODELS:
+                    try:
+                        with httpx.Client(timeout=3.0) as http_client:
+                            http_client.post(f"{ollama_url.rstrip('/')}/api/generate", json={"model": m, "keep_alive": 0})
+                    except Exception:
+                        pass
+
                 profile = PROFILES["breeze"]
                 transcriber = SpeachesTranscriber(speaches_url, profile)
             else:

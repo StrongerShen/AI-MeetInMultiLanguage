@@ -273,7 +273,17 @@ def add_corrected_revision(
     source_revision_id: str | None = None,
     corrected_segments: list[TranscriptSegment] | None = None,
 ) -> EvaluationRun:
-    """新增人工校訂版逐字稿，保留原始 raw_asr 絕不覆蓋，並盡可能保留原始段落結構。"""
+    """新增人工校訂版逐字稿，保留原始 raw_asr 絕不覆蓋，並嚴格保留原始段落結構。
+
+    契約：
+    - 若來源有多個段落，全篇純文字校訂必須與來源段落逐行一一對應。
+    - 行數不符時回傳 400（ValueError），並提供臺灣繁體中文錯誤訊息。
+    - 不得捨棄未對應段落。
+    - 不得把多個來源段落靜默合併。
+    - 單一來源段落仍可接受單行校訂。
+    - raw_asr 永久不可修改、清除或移出版本清單。
+    - 校訂版必須保留來源段落 ID、時間戳、講者與 source_revision_id。
+    """
     run = store.get(run_id)
     if not run.raw_asr:
         raise ValueError("此工作尚未有原始 ASR 逐字稿")
@@ -296,51 +306,33 @@ def add_corrected_revision(
 
     if corrected_segments is None:
         lines = [line.strip() for line in corrected_text.splitlines() if line.strip()]
-        if len(lines) == len(source.segments) and lines:
-            # 行數完全相符：精確逐段對應，完整保留原始時間軸與講者標籤
-            corrected_segments = [
-                seg.model_copy(update={"text": lines[i]})
-                for i, seg in enumerate(source.segments)
-            ]
-        elif len(lines) > 1:
-            # 多行文字但行數不同：為每行保留獨立段落，盡可能對應前段的時間與講者
-            corrected_segments = []
-            for i, line in enumerate(lines):
-                if i < len(source.segments):
-                    orig = source.segments[i]
-                    corrected_segments.append(
-                        TranscriptSegment(
-                            segment_id=orig.segment_id,
-                            start_ms=orig.start_ms,
-                            end_ms=orig.end_ms,
-                            speaker=orig.speaker,
-                            text=line,
-                        )
-                    )
-                else:
-                    last_end = source.segments[-1].end_ms if source.segments else None
-                    corrected_segments.append(
-                        TranscriptSegment(
-                            segment_id=f"seg-{i+1:03d}",
-                            start_ms=last_end,
-                            end_ms=last_end,
-                            speaker=source.segments[-1].speaker if source.segments else None,
-                            text=line,
-                        )
-                    )
-        else:
-            # 單行文字
+        source_count = len(source.segments)
+
+        if source_count <= 1:
+            # 單一來源段落：接受任何行數的校訂（合併為單段）
             start_ms = source.segments[0].start_ms if source.segments else None
             end_ms = source.segments[-1].end_ms if source.segments else None
             corrected_segments = [
                 TranscriptSegment(
-                    segment_id=source.segments[0].segment_id if len(source.segments) == 1 else "seg-001",
+                    segment_id=source.segments[0].segment_id if source.segments else "seg-001",
                     start_ms=start_ms,
                     end_ms=end_ms,
-                    speaker=source.segments[0].speaker if len(source.segments) == 1 else None,
+                    speaker=source.segments[0].speaker if source.segments else None,
                     text=corrected_text,
                 )
             ]
+        elif len(lines) == source_count:
+            # 行數完全相符：精確逐段對應，完整保留各段落之 ID、時間軸與講者標籤
+            corrected_segments = [
+                seg.model_copy(update={"text": lines[i]})
+                for i, seg in enumerate(source.segments)
+            ]
+        else:
+            # 行數不符：嚴格拒絕，不得靜默捨棄或合併
+            raise ValueError(
+                f"校訂行數（{len(lines)}）與來源段落數（{source_count}）不符。"
+                f"全篇校訂必須與來源段落逐行一一對應，請確認每個段落各佔一行。"
+            )
 
     desc = f"全篇校訂（保留 {len(corrected_segments)} 段結構）"
     corrected_rev = TranscriptResult(

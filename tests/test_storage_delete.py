@@ -1,10 +1,34 @@
+"""儲存層刪除與安全性測試。
+
+涵蓋：
+- 正常刪除（紀錄 + 音訊）
+- 路徑穿越與 symlink 防護
+- 音訊刪除失敗時保留工作紀錄
+- 重入鎖與並行更新
+- 原子性安全刪除（TOCTOU 競爭防護）
+- 狀態在檢查期間改變的並行測試
+"""
 from __future__ import annotations
 
+import concurrent.futures
+import threading
+import time
 from pathlib import Path
+
 import pytest
 
-from meet_in_multi_language.models import Engine, EvaluationRun, RunStatus
-from meet_in_multi_language.storage import RunNotFoundError, RunStore
+from meet_in_multi_language.models import (
+    Engine,
+    EvaluationRun,
+    RunStatus,
+    TranscriptResult,
+    TranscriptRevisionKind,
+)
+from meet_in_multi_language.storage import (
+    DeleteConflictError,
+    RunNotFoundError,
+    RunStore,
+)
 
 
 def test_storage_delete_removes_record_and_audio(tmp_path: Path) -> None:
@@ -94,9 +118,6 @@ def test_storage_delete_audio_failure_preserves_record(
 
 
 def test_storage_reentrant_lock_and_concurrent_updates(tmp_path: Path) -> None:
-    import concurrent.futures
-    from meet_in_multi_language.models import TranscriptResult, TranscriptRevisionKind
-
     store = RunStore(tmp_path)
     base_rev = TranscriptResult(
         revision_id="rev-0",
@@ -146,3 +167,124 @@ def test_storage_reentrant_lock_and_concurrent_updates(tmp_path: Path) -> None:
     final_run = store.get("run-concurrent")
     # 原始 1 個 + 追加 10 個 = 11 個版本，完全無 lost update
     assert len(final_run.revisions) == 11
+
+
+# === 原子性安全刪除 (safe_delete) ===
+
+def test_safe_delete_completed_run(tmp_path: Path) -> None:
+    """safe_delete 在同一鎖內完成狀態檢查、音訊刪除、紀錄移除。"""
+    store = RunStore(tmp_path)
+    audio_file = store.audio_path("safe-delete.wav")
+    audio_file.write_bytes(b"audio")
+
+    store.save(
+        EvaluationRun(
+            run_id="run-safe-del",
+            original_filename="safe.wav",
+            stored_filename="safe-delete.wav",
+            engine=Engine.BREEZE,
+            status=RunStatus.COMPLETED,
+        )
+    )
+    store.safe_delete("run-safe-del")
+    assert not audio_file.exists()
+    with pytest.raises(RunNotFoundError):
+        store.get("run-safe-del")
+
+
+def test_safe_delete_rejects_active_statuses(tmp_path: Path) -> None:
+    """safe_delete 拒絕刪除 queued、transcribing、summarizing 狀態的工作。"""
+    store = RunStore(tmp_path)
+
+    for status in (RunStatus.QUEUED, RunStatus.TRANSCRIBING, RunStatus.SUMMARIZING):
+        run_id = f"run-active-{status.value}"
+        store.save(
+            EvaluationRun(
+                run_id=run_id,
+                original_filename="active.wav",
+                stored_filename="active.wav",
+                engine=Engine.BREEZE,
+                status=status,
+            )
+        )
+        with pytest.raises(DeleteConflictError, match="正在執行或排隊中"):
+            store.safe_delete(run_id)
+        # 紀錄應完整保留
+        assert store.get(run_id).status == status
+
+
+def test_safe_delete_audio_failure_preserves_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """safe_delete 音訊刪除失敗時保留工作紀錄。"""
+    store = RunStore(tmp_path)
+    audio_file = store.audio_path("safe-fail.wav")
+    audio_file.write_bytes(b"audio")
+
+    store.save(
+        EvaluationRun(
+            run_id="run-safe-fail",
+            original_filename="fail.wav",
+            stored_filename="safe-fail.wav",
+            engine=Engine.BREEZE,
+            status=RunStatus.COMPLETED,
+        )
+    )
+
+    def fail_unlink(*args, **kwargs) -> None:
+        raise OSError("權限不足")
+
+    monkeypatch.setattr(Path, "unlink", fail_unlink)
+
+    with pytest.raises(OSError, match="刪除音訊檔案失敗"):
+        store.safe_delete("run-safe-fail")
+
+    # 紀錄應完整保留
+    assert store.get("run-safe-fail").run_id == "run-safe-fail"
+
+
+def test_safe_delete_toctou_race_condition(tmp_path: Path) -> None:
+    """驗證 safe_delete 不存在 TOCTOU 競爭：
+
+    模擬狀態在檢查期間從 completed 變為 transcribing。
+    由於 safe_delete 在同一個鎖內完成所有操作，外部修改必須等鎖釋放後才能進行。
+    """
+    store = RunStore(tmp_path)
+    audio_file = store.audio_path("toctou.wav")
+    audio_file.write_bytes(b"audio")
+
+    store.save(
+        EvaluationRun(
+            run_id="run-toctou",
+            original_filename="toctou.wav",
+            stored_filename="toctou.wav",
+            engine=Engine.BREEZE,
+            status=RunStatus.COMPLETED,
+        )
+    )
+
+    # 在另一個執行緒嘗試將狀態改為 TRANSCRIBING（模擬背景工作啟動）
+    barrier = threading.Barrier(2, timeout=5)
+    results: dict[str, object] = {"updater_blocked": False}
+
+    def updater() -> None:
+        """嘗試更新狀態。由於 safe_delete 持有鎖，更新必須等候。"""
+        barrier.wait()  # 等待主執行緒也就緒
+        try:
+            store.update("run-toctou", status=RunStatus.TRANSCRIBING)
+        except RunNotFoundError:
+            # 如果 safe_delete 先完成，紀錄已不存在，預期行為
+            results["updater_blocked"] = True
+
+    t = threading.Thread(target=updater)
+    t.start()
+    barrier.wait()  # 同步起跑
+
+    # 主執行緒執行 safe_delete
+    store.safe_delete("run-toctou")
+
+    t.join(timeout=5)
+
+    # 驗證：工作已刪除或更新者因紀錄不存在而失敗
+    with pytest.raises(RunNotFoundError):
+        store.get("run-toctou")
