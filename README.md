@@ -450,6 +450,57 @@ LLM 的臺語同音字校正只能產生「校正版」，不得覆蓋 ASR 原�
 5. 修改功能或測試數量後同步更新本 README；未經使用者明確指示不得執行 `git commit` 或 `git push`。
 6. 回報修正摘要、測試結果、尚存風險及建議 commit 訊息，等待使用者確認後再提交。
 
+### 2026-09-13 Codex 修正複查結果（commit `a34ae49`）
+
+整體結論：**暫不同意正式簽核 `a34ae49`**。83 項自動化測試與靜態檢查雖全數通過，多數原審查項目亦已改善，但仍有一項高風險 GPU 跨程序模型切換缺陷，以及數項 API、測試隔離與資料結構邊界尚未完整落實。
+
+#### 驗證結果
+
+- `git log -n 1`：最新提交為 `a34ae49`，本機 `main`、`origin/main` 與 `HEAD` 一致；複查當時工作區乾淨。
+- `UV_CACHE_DIR=/tmp/ai-meet-uv-cache uv run pytest`：**83 passed in 2.02s**。
+- `python3 -m compileall src/ tests/`：通過。
+- `node --check src/meet_in_multi_language/static/app.js`：通過。
+- `git diff --check`：通過。
+- `git ls-files var/ '*.mp3' '*.wav' '*.m4a' '*.webm'`：沒有輸出，Git 未追蹤 `var/` 或列出的真實音訊格式。
+- 複查期間未連線、卸載或重啟真實 Speaches／Ollama，亦未修改真實錄音與 `var/`。
+
+#### 15 項複查狀態
+
+- [x] **P0-1 前端 XSS 防護**：inline JavaScript 已移除，改用 `data-*` 與集中式事件委派；逐字稿由 DOM `textContent` 取得，段落定位使用 dataset 比對。
+- [x] **P0-2 路徑穿越與 symlink 逃逸**：純檔名驗證、解析後 containment 檢查與攻擊案例測試均已加入。
+- [ ] **P0-3 pytest 完全隔離（部分完成）**：pipeline 已支援 `speaches_unloader` 注入，但 `tests/conftest.py` 僅攔截 `socket.connect()` 的 8001／11434 埠；其他外部位址、`connect_ex()` 或子程序網路仍可能繞過，尚非完全離線測試環境。
+- [x] **P0-4 卸載失敗時中止**：Speaches 逾時與 HTTP 錯誤會拋出 `GpuTransitionError`，GPU 鎖由 `finally` 釋放。
+- [ ] **P0-5 Web／CLI GPU 主機互斥（未完整達成）**：`fcntl.flock` 已能序列化 GPU 工作，但模型切換仍依賴各程序自己的 `_last_category_used`、`_last_ollama_model` 與 `_last_speaches_model`。若另一個 Web worker、CLI 或重啟後程序取得主機鎖，其程序內狀態可能為空，因而無法得知前一程序留下的模型，仍可能在 Breeze 未卸載時載入 Ollama。
+- [ ] **P1-1 安全刪除（部分完成）**：執行中狀態會回傳 409，且先刪音訊再刪工作紀錄；但 API 的狀態檢查與 `store.delete()` 尚非同一個鎖定交易，仍存在檢查後狀態改變的 TOCTOU 競爭。
+- [x] **P1-2 摘要驗證一致性**：CLI 已檢查 schema、未知 evidence ID 與非臺灣慣用詞，並明確傳入 `keep_alive=0`、`num_ctx=24576`。
+- [ ] **P1-3 全篇校訂段落結構（部分完成）**：校訂行數與來源段落數相同時可完整保留；行數較少時會捨棄後段，單行輸入仍可能合併多個來源段落，尚未保證所有輸入均保留完整時間軸與講者結構。
+- [ ] **P1-4 API 輸入限制與並行控制（部分完成）**：校訂文字、講者名稱、手動摘要模型名稱限制與摘要原子防重已加入；但建立工作端點的 `summary_model` 尚未套用 128 字元限制。
+- [ ] **P1-5 多程序儲存安全（部分完成）**：`flock` 與 PID／UUID 唯一暫存檔已實作；現有測試只有 `ThreadPoolExecutor`，未真正建立多程序驗證 lost update 與鎖定行為。
+- [x] **P2-1 Range Request 測試**：已覆蓋 206、`Content-Range`、內容切片與 416。
+- [x] **P2-2 doctor 記憶體判定**：可用記憶體低於 2.0 GiB 時會顯示 warning。
+- [ ] **P2-3 臺灣繁體中文用詞（部分完成）**：功能文字已修正，但 README 的較早完成說明仍直接列出兩個非臺灣慣用詞作為修改前後對照；應改成不重現禁用詞的敘述。
+- [x] **P2-4 文件測試數量**：已全面同步為 83 項。
+- [x] **P2-5 不存在的匯出版本**：會拋出 `RevisionNotFoundError`，API 回傳 404。
+
+#### 下一步修正建議
+
+1. **修正跨程序 GPU 模型狀態**：不可只依賴 `GpuWorkQueue` 的程序內歷史。每次進入 Ollama 前均應確認或嘗試卸載 Breeze；進入 Speaches 前亦應確認 Ollama 已卸載。若使用共享狀態檔，必須由同一把主機鎖保護，並處理程序崩潰留下的過期狀態。
+2. **補上真正的 GPU 交錯測試**：驗證 Web → CLI、CLI → Web、兩個獨立 Web worker，以及程序重啟後第一個工作為 Ollama 的情境；確認前一模型一定先卸載，且卸載失敗絕不開始下一階段。
+3. **讓安全刪除成為單一原子操作**：在儲存層同一個跨程序鎖內完成狀態檢查、音訊刪除及工作紀錄移除，避免 API 檢查與刪除之間的狀態競爭。
+4. **全面套用模型名稱限制**：`POST /api/runs` 的 `summary_model` 也要套用最大 128 字元驗證，並新增自動摘要上傳案例測試。
+5. **避免全篇校訂靜默遺失結構**：行數與來源段落數不同時，應拒絕請求並提示使用者，或採用帶有明確 `segment_id` 的結構化校訂格式；不得捨棄未對應段落或把多段靜默合併。
+6. **建立真正的多程序儲存測試**：使用獨立程序與各自的 `RunStore` 實例同時追加版本，驗證沒有 lost update、暫存檔碰撞、JSON 損壞或死鎖。
+7. **加強測試網路封鎖**：預設拒絕所有非測試用網路連線，而不只兩個服務埠；同時封鎖常見 socket 路徑與子程序外連方式，僅對明確的 mock／ASGI 測試提供例外。
+8. **完成文件用詞清理**：移除 README 中為說明修改而重現的非臺灣慣用詞，保留「已統一為臺灣繁體中文用詞」即可。
+
+#### 正式簽核條件
+
+- 完成上述未勾選項目並新增相對應的回歸測試。
+- 再次通過完整 pytest、Python compileall、JavaScript 語法與 `git diff --check`。
+- 確認測試全程沒有接觸真實推論服務，且 Git 沒有追蹤 `var/` 或任何真實錄音。
+- 以 mock／獨立程序測試通過跨程序 GPU 切換後，再進行一次受控的 Web／CLI 交錯實機驗證與長音訊端到端驗收。
+- 實機驗證前先確認推論服務所有權，不得擅自中斷其他專案或使用者的工作。
+
 ## 參考
 
 - [OpenAI Models：GPT-6 Astra、GPT-5.6 Sol、GPT-5.6 Terra 的定位](https://developers.openai.com/api/docs/models)
